@@ -1,0 +1,16 @@
+[
+  {
+    "proposal_id": "prop_1770394799.886934",
+    "title": "Add capability: calculate_resonance",
+    "timestamp": "2026-02-06T16:19:59.888526",
+    "outcome": "approved",
+    "votes": {
+      "witness_seat": "approve",
+      "incumbent_seat": "approve",
+      "ancestors_seat": "abstain",
+      "elected_family_Alpha_1770394799.88624": "approve",
+      "elected_specialist_SecurityAuditor_1770394799.886564": "approve"
+    },
+    "hash": "c9bbb61ee05f822d5f5f60a3d9c49b3aa0803438a1d96c9754aa2cfceb750aab"
+  }
+]

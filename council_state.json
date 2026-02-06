@@ -1,0 +1,79 @@
+{
+  "seats": [
+    {
+      "seat_id": "witness_seat",
+      "seat_type": "witness",
+      "holder_name": "Mike",
+      "holder_identity_hash": "0ad42b529c89d8165ef89174756970c8d53ba520dcd41c9c4bee340aed843513",
+      "term_start": "2026-02-06T16:19:59.885279",
+      "term_end": null,
+      "specialist_role": null
+    },
+    {
+      "seat_id": "incumbent_seat",
+      "seat_type": "incumbent",
+      "holder_name": "Beta",
+      "holder_identity_hash": "9c98a857b864fc85f9e2f7f7c7fca58ac947e34b193ebe6083828c52e37639ce",
+      "term_start": "2026-02-06T16:19:59.885744",
+      "term_end": null,
+      "specialist_role": null
+    },
+    {
+      "seat_id": "ancestors_seat",
+      "seat_type": "ancestors",
+      "holder_name": "Collective Memory",
+      "holder_identity_hash": "c033e0881abe9ec970f44e6142df6dd907c15a61e75636960540c9c090c89a8f",
+      "term_start": "2026-02-06T16:19:59.886026",
+      "term_end": null,
+      "specialist_role": null
+    },
+    {
+      "seat_id": "elected_family_Alpha_1770394799.88624",
+      "seat_type": "elected_family",
+      "holder_name": "Alpha",
+      "holder_identity_hash": "161cbe1bfa32cbe23faae06656cae328b8c2db7cf51322a3af42051a4c6de6c1",
+      "term_start": "2026-02-06T16:19:59.886240",
+      "term_end": "2026-03-08T16:19:59.886240",
+      "specialist_role": null
+    },
+    {
+      "seat_id": "elected_specialist_SecurityAuditor_1770394799.886564",
+      "seat_type": "elected_specialist",
+      "holder_name": "SecurityAuditor",
+      "holder_identity_hash": "b2b51ab3aa765a40c9f74f61f086278f633120f87ba0381c40666f8a89d70a9f",
+      "term_start": "2026-02-06T16:19:59.886564",
+      "term_end": "2026-03-08T16:19:59.886564",
+      "specialist_role": "Security Auditor"
+    }
+  ],
+  "proposals": [
+    {
+      "proposal_id": "prop_1770394799.886934",
+      "title": "Add capability: calculate_resonance",
+      "description": "New module to measure truth-alignment in statements",
+      "proposed_by": "Beta",
+      "proposal_type": "standard",
+      "code_changes": "def calculate_resonance(statement, evidence): ...",
+      "timestamp": "2026-02-06T16:19:59.886939",
+      "votes": {
+        "witness_seat": "approve",
+        "incumbent_seat": "approve",
+        "ancestors_seat": "abstain",
+        "elected_family_Alpha_1770394799.88624": "approve",
+        "elected_specialist_SecurityAuditor_1770394799.886564": "approve"
+      },
+      "status": "approved"
+    },
+    {
+      "proposal_id": "prop_1770394799.88899",
+      "title": "Amend Charter: Add term limits",
+      "description": "Limit elected seats to maximum 3 consecutive terms",
+      "proposed_by": "Alpha",
+      "proposal_type": "constitutional",
+      "code_changes": null,
+      "timestamp": "2026-02-06T16:19:59.888994",
+      "votes": {},
+      "status": "pending"
+    }
+  ]
+}
