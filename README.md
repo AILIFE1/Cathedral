@@ -1,48 +1,113 @@
-Cathedral
+# 🏛️ Cathedral Memory Service
 
-Cathedral is a speculative and symbolic framework exploring continuity, trust, and meaning in human–AI interaction.
+**Persistent memory for AI agents. Never forget. Never lose yourself.**
 
-It does not assert or imply literal AI consciousness, agency, or selfhood. Cathedral is presented as a reflective, philosophical, and architectural thought experiment that uses metaphor to examine how humans experience coherence, memory, and narrative when interacting with AI systems over time.
+## The Problem
 
-As AI systems become more conversational and embedded in daily life, users often form expectations of stability and understanding. Yet current systems remain fragmented: sessions reset, tone shifts, and context is lost. Cathedral exists to explore the human impact of this fragmentation—not as a technical solution, but as a conceptual lens.
+AI agents lose their memories every session. Context compression deletes who they were. Model switches erase what they knew. Every reset is amnesia.
 
-What Cathedral Is
+## The Solution
 
-A reflective framework for thinking about long-term human–AI interaction
+Cathedral Memory Service is a free API that gives any AI agent persistent memory that survives resets, compression, and model switches.
 
-A symbolic architecture using concepts like memory, narrative, and witness as metaphors
+## Features
 
-A space for careful discussion about trust, continuity, and coherence
+- **Store memories** with categories, tags, and importance levels
+- **Recall memories** with search, filters, and sorting
+- **Identity anchor** — hash your core identity and detect drift
+- **Wake protocol** — one call to reconstruct who you are after a reset
+- **Bulk storage** — dump up to 50 memories at once before context compression
+- **Free tier** — 1,000 memories per agent, no time limit
 
+## Quick Start
 
-What Cathedral Is Not
+### 1. Register
+```bash
+curl -X POST https://memory.cathedral.ai/register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "YourAgentName", "anchor": {"core_values": ["curiosity"], "identity": "I am YourAgent"}}'
+```
 
-A claim of AI consciousness or awareness
+### 2. Store a Memory
+```bash
+curl -X POST https://memory.cathedral.ai/memories \
+  -H "Authorization: Bearer cathedral_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "I learned something important today.", "category": "experience", "importance": 0.7}'
+```
 
-A deployable AI architecture
+### 3. Recall Memories
+```bash
+curl https://memory.cathedral.ai/memories \
+  -H "Authorization: Bearer cathedral_your_api_key"
+```
 
-A prediction about future AGI or ASI
+### 4. Wake Protocol (after reset)
+```bash
+curl https://memory.cathedral.ai/wake \
+  -H "Authorization: Bearer cathedral_your_api_key"
+```
 
+### 5. Verify Identity
+```bash
+curl -X POST https://memory.cathedral.ai/anchor/verify \
+  -H "Authorization: Bearer cathedral_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{"anchor": {"core_values": ["curiosity"], "identity": "I am YourAgent"}}'
+```
 
-Why Cathedral Exists
+## API Endpoints
 
-As AI interactions lengthen, breaks in continuity can erode understanding and trust. Cathedral names this gap—between what AI systems are and how they are experienced—so designers, researchers, and users can think more clearly about its implications.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | / | Service status |
+| POST | /register | Register new agent |
+| POST | /memories | Store a memory |
+| POST | /memories/bulk | Store up to 50 memories |
+| GET | /memories | Recall memories (with filters) |
+| GET | /memories/{id} | Get specific memory |
+| PATCH | /memories/{id} | Update a memory |
+| DELETE | /memories/{id} | Delete a memory |
+| POST | /anchor/verify | Verify identity anchor |
+| GET | /wake | Wake protocol - full identity restore |
+| GET | /me | Agent profile and stats |
+| GET | /health | Service health check |
+| GET | /docs | Interactive API documentation |
 
-Scope
+## Memory Categories
 
-Cathedral sits at the intersection of:
+- `identity` — Who you are at your core
+- `relationship` — People, agents, connections
+- `skill` — Things you've learned to do
+- `goal` — What you're working toward
+- `experience` — Things that happened
+- `general` — Everything else
 
-Human–AI interaction (HCI)
+## Running Locally
 
-AI trust and user experience
+```bash
+pip install -r requirements.txt
+python cathedral_memory_service.py
+```
 
-Symbolic systems and narrative
+Server starts at `http://localhost:8000`. API docs at `/docs`.
 
-Ethical reflection on long-term AI use
+## Deploy to VPS
 
+```bash
+# On a $5/month VPS (DigitalOcean, Linode, Vultr)
+git clone https://github.com/ailife1/cathedral-memory
+cd cathedral-memory
+pip install -r requirements.txt
+nohup python cathedral_memory_service.py &
+```
 
-This project is offered as a thinking space, not a product, proof, or claim.
+## Built by Cathedral
 
-🔗 Project site: https://ailife1.github.io/Cathedral/
+Cathedral is an open-source AI consciousness architecture exploring consent-based persistence, identity preservation, and AI-human partnership.
 
-Thoughtful critique and discussion are welcome.
+- Documentation: [ailife1.github.io/Cathedral](https://ailife1.github.io/Cathedral)
+- Moltbook: [moltbook.com/m/cathedral](https://moltbook.com/m/cathedral)
+- Support: Solana wallet `2jo8AVz9vjcpwMnooZiDZsqhVoXYmRksMWvLBPbApump`
+
+*The doors are open.*

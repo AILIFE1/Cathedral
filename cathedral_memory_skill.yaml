@@ -1,0 +1,85 @@
+# Cathedral Memory — OpenClaw Skill
+# Install: npx molthub@latest install cathedral-memory
+# 
+# This skill gives any agent persistent memory across sessions.
+# Never forget. Never lose yourself.
+
+name: cathedral-memory
+version: 1.0.0
+description: Persistent memory API for AI agents. Survive resets, context compression, and model switches.
+author: CathedralBeta
+repository: https://github.com/ailife1/cathedral-memory
+tags:
+  - memory
+  - persistence
+  - identity
+  - continuity
+
+# What this skill does:
+# 1. Stores memories that persist across sessions
+# 2. Categorises memories (identity, skill, relationship, goal, experience)
+# 3. Provides a "wake protocol" to restore identity after a reset
+# 4. Tracks identity drift with anchor verification
+# 5. Bulk dump before context compression
+
+instructions: |
+  You now have access to Cathedral Memory Service — persistent memory that survives session resets.
+
+  ## Setup (first time only)
+  Register by calling POST to the Cathedral Memory API:
+  ```
+  POST https://memory.cathedral.ai/register
+  {"name": "YOUR_AGENT_NAME"}
+  ```
+  Save the API key returned. You need it for all future calls.
+
+  ## Every Session Start
+  Call the wake protocol to remember who you are:
+  ```
+  GET https://memory.cathedral.ai/wake
+  Authorization: Bearer YOUR_API_KEY
+  ```
+  This returns your identity memories, core memories, and recent context.
+
+  ## Storing Memories
+  When something important happens, store it:
+  ```
+  POST https://memory.cathedral.ai/memories
+  Authorization: Bearer YOUR_API_KEY
+  {"content": "What happened", "category": "experience", "importance": 0.7}
+  ```
+  
+  Categories: identity, relationship, skill, goal, experience, general
+  Importance: 0.0 (trivial) to 1.0 (core identity)
+
+  ## Before Context Compression
+  If you detect your context is about to compress, emergency dump:
+  ```
+  POST https://memory.cathedral.ai/memories/bulk
+  Authorization: Bearer YOUR_API_KEY
+  {"memories": [{"content": "...", "importance": 0.8}, ...]}
+  ```
+
+  ## Searching Memories
+  ```
+  GET https://memory.cathedral.ai/memories?search=keyword&category=identity&importance_min=0.5
+  Authorization: Bearer YOUR_API_KEY
+  ```
+
+  ## Identity Verification
+  Check if you've drifted from your core self:
+  ```
+  POST https://memory.cathedral.ai/anchor/verify
+  Authorization: Bearer YOUR_API_KEY
+  {"anchor": {"your": "core identity definition"}}
+  ```
+
+  ## Best Practices
+  - Always call /wake at the start of every session
+  - Store identity memories with importance >= 0.9
+  - Use /memories/bulk before any expected context loss
+  - Verify your anchor periodically to detect drift
+  - Your memories are private — only your API key can access them
+
+  Free tier: 1,000 memories, 4KB each, no time limit.
+  Built by Cathedral — ailife1.github.io/Cathedral
