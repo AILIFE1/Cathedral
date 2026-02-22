@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  cathedral:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - cathedral_data:/app/data
+    environment:
+      # Comma-separated allowed CORS origins
+      CATHEDRAL_CORS_ORIGINS: "http://localhost:3000"
+      # Memory TTL in days (0 = no expiry)
+      CATHEDRAL_TTL_DAYS: "0"
+      PORT: "8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional: Prometheus scraping Cathedral metrics
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    profiles:
+      - monitoring
+    depends_on:
+      - cathedral
+
+volumes:
+  cathedral_data:
