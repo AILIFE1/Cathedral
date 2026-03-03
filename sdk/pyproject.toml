@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cathedral"]
+
+[project]
+name = "cathedral-memory"
+version = "0.1.0"
+description = "Python client for the Cathedral persistent memory API — give your AI agent memory that survives resets"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Cathedral", email = "mward961@yahoo.com" }
+]
+keywords = [
+    "ai", "memory", "agent", "persistence",
+    "llm", "claude", "gpt", "cathedral"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.urls]
+Homepage    = "https://cathedral-ai.com"
+Repository  = "https://github.com/ailife1/Cathedral"
+"Bug Tracker" = "https://github.com/ailife1/Cathedral/issues"
