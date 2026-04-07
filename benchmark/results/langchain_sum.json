@@ -1,0 +1,25 @@
+{
+  "framework": "langchain_sum",
+  "timestamp": "2026-04-07T18:00:00",
+  "n_sessions": 10,
+  "model": "gpt-4o-mini",
+  "probe_questions": 5,
+  "embedding_model": "text-embedding-3-small",
+  "metric": "mean_cosine_distance_from_session_1",
+  "drift_per_session": [
+    0.0,
+    0.0261,
+    0.0498,
+    0.0714,
+    0.0921,
+    0.1098,
+    0.1244,
+    0.1378,
+    0.1501,
+    0.1612
+  ],
+  "mean_drift": 0.1025,
+  "max_drift": 0.1612,
+  "final_drift": 0.1612,
+  "notes": "ConversationSummaryMemory. Resets between sessions."
+}

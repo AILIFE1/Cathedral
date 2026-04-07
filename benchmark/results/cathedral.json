@@ -1,0 +1,25 @@
+{
+  "framework": "cathedral",
+  "timestamp": "2026-04-07T18:00:00",
+  "n_sessions": 10,
+  "model": "gpt-4o-mini",
+  "probe_questions": 5,
+  "embedding_model": "text-embedding-3-small",
+  "metric": "mean_cosine_distance_from_session_1",
+  "drift_per_session": [
+    0.0,
+    0.0041,
+    0.0079,
+    0.0093,
+    0.0108,
+    0.0121,
+    0.0134,
+    0.0119,
+    0.0127,
+    0.0131
+  ],
+  "mean_drift": 0.0106,
+  "max_drift": 0.0134,
+  "final_drift": 0.0131,
+  "notes": "cathedral_wake() at session start. Persistent memory corpus. Internal drift data from cathedral-ai.com/cathedral-beta."
+}

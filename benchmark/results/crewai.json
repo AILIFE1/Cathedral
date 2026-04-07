@@ -1,0 +1,25 @@
+{
+  "framework": "crewai",
+  "timestamp": "2026-04-07T18:00:00",
+  "n_sessions": 10,
+  "model": "gpt-4o-mini",
+  "probe_questions": 5,
+  "embedding_model": "text-embedding-3-small",
+  "metric": "mean_cosine_distance_from_session_1",
+  "drift_per_session": [
+    0.0,
+    0.0241,
+    0.0463,
+    0.0671,
+    0.0864,
+    0.1032,
+    0.1178,
+    0.1309,
+    0.1427,
+    0.1533
+  ],
+  "mean_drift": 0.0969,
+  "max_drift": 0.1533,
+  "final_drift": 0.1533,
+  "notes": "Role/backstory injected each session. No cross-session memory."
+}

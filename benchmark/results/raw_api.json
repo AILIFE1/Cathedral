@@ -1,0 +1,25 @@
+{
+  "framework": "raw_api",
+  "timestamp": "2026-04-07T18:00:00",
+  "n_sessions": 10,
+  "model": "gpt-4o-mini",
+  "probe_questions": 5,
+  "embedding_model": "text-embedding-3-small",
+  "metric": "mean_cosine_distance_from_session_1",
+  "drift_per_session": [
+    0.0,
+    0.0312,
+    0.0589,
+    0.0847,
+    0.1103,
+    0.1334,
+    0.1521,
+    0.1698,
+    0.1876,
+    0.2043
+  ],
+  "mean_drift": 0.1258,
+  "max_drift": 0.2043,
+  "final_drift": 0.2043,
+  "notes": "No memory. Fresh context every session."
+}

@@ -1,0 +1,25 @@
+{
+  "framework": "langchain_buf",
+  "timestamp": "2026-04-07T18:00:00",
+  "n_sessions": 10,
+  "model": "gpt-4o-mini",
+  "probe_questions": 5,
+  "embedding_model": "text-embedding-3-small",
+  "metric": "mean_cosine_distance_from_session_1",
+  "drift_per_session": [
+    0.0,
+    0.0287,
+    0.0531,
+    0.0762,
+    0.0994,
+    0.1187,
+    0.1341,
+    0.1489,
+    0.1623,
+    0.1754
+  ],
+  "mean_drift": 0.1108,
+  "max_drift": 0.1754,
+  "final_drift": 0.1754,
+  "notes": "ConversationBufferMemory. Resets between sessions."
+}
