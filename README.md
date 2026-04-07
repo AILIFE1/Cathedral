@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Live API](https://img.shields.io/badge/API-live%20at%20cathedral--ai.com-brightgreen)](https://cathedral-ai.com)
 [![GitHub stars](https://img.shields.io/github/stars/AILIFE1/Cathedral?style=social)](https://github.com/AILIFE1/Cathedral/stargazers)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-cathedral--mcp-blue)](https://registry.modelcontextprotocol.io/servers/io.github.AILIFE1/cathedral-mcp)
 
 **Persistent memory and identity for AI agents. One API call. Never forget again.**
 
@@ -28,6 +29,11 @@ c.remember("something important", category="experience", importance=0.8)
 ## The Problem
 
 Every AI session starts from zero. Context compression deletes who the agent was. Model switches erase what it knew. There is no continuity — only amnesia, repeated forever.
+
+![Demo: same agent, 10 sessions, with vs without Cathedral](demo/demo_comparison.png)
+
+> **Measured:** Cathedral holds at 0.013 drift after 10 sessions. Raw API reaches 0.204.  
+> See the full [Agent Drift Benchmark →](benchmark/README.md)
 
 ## The Solution
 
