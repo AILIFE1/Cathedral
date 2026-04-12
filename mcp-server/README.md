@@ -63,7 +63,32 @@ Restart Claude Code, then run `/mcp` to verify the server is connected.
 }
 ```
 
-### 4. Or install directly
+### 4. Remote MCP server (no install — Claude API, Managed Agents)
+
+Cathedral runs a public MCP endpoint at `https://cathedral-ai.com/mcp`. Use it directly — no local install needed:
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+response = client.beta.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Wake up and tell me who you are."}],
+    mcp_servers=[{
+        "type": "url",
+        "url": "https://cathedral-ai.com/mcp",
+        "name": "cathedral",
+        "authorization_token": "your_cathedral_api_key"
+    }],
+    tools=[{"type": "mcp_toolset", "mcp_server_name": "cathedral"}],
+    betas=["mcp-client-2025-11-20"]
+)
+```
+
+The bearer token is your Cathedral API key — no server-side config needed. Multi-tenant by design.
+
+### 5. Or install directly
 
 ```bash
 pip install cathedral-mcp

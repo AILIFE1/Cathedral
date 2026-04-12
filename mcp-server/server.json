@@ -3,12 +3,19 @@
   "name": "io.github.AILIFE1/cathedral-mcp",
   "title": "Cathedral — Persistent Memory for AI Agents",
   "description": "Persistent memory and drift detection for AI agents across session restarts.",
-  "version": "1.0.1",
+  "version": "1.1.0",
+  "remotes": [
+    {
+      "transportType": "streamable-http",
+      "url": "https://cathedral-ai.com/mcp",
+      "authorizationTokenEnvVar": "CATHEDRAL_API_KEY"
+    }
+  ],
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "cathedral-mcp",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "installInstructions": "Set CATHEDRAL_API_KEY environment variable to your key from cathedral-ai.com",
       "transport": {
         "type": "stdio"
