@@ -35,6 +35,35 @@ from typing import Optional, List
 from contextlib import contextmanager
 
 import structlog
+import math
+
+# ── Semantic search (optional) ──────────────────────────────────────────────
+try:
+    from fastembed import TextEmbedding as _FE
+    _embed_model = _FE("BAAI/bge-small-en-v1.5")
+    SEMANTIC_SEARCH = True
+except Exception:
+    _embed_model = None
+    SEMANTIC_SEARCH = False
+
+def _embed(text: str):
+    """Return embedding list or None."""
+    if _embed_model is None:
+        return None
+    try:
+        return list(_embed_model.embed([text[:512]]))[0].tolist()
+    except Exception:
+        return None
+
+def _cosine(a: list, b: list) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot  = sum(x * y for x, y in zip(a, b))
+    magA = math.sqrt(sum(x * x for x in a))
+    magB = math.sqrt(sum(x * x for x in b))
+    return dot / (magA * magB) if magA and magB else 0.0
+# ─────────────────────────────────────────────────────────────────────────────
+
 from fastapi import FastAPI, HTTPException, Header, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -134,6 +163,7 @@ def init_db():
             accessed_at  TEXT,
             access_count INTEGER DEFAULT 0,
             expires_at   TEXT,
+            embedding    TEXT,
             FOREIGN KEY (agent_id) REFERENCES agents(id)
         );
 
@@ -179,10 +209,69 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_memories_created  ON memories(created_at);
         CREATE INDEX IF NOT EXISTS idx_memories_cursor   ON memories(agent_id, id);
         CREATE INDEX IF NOT EXISTS idx_memories_expires  ON memories(expires_at);
+
+        -- Shared memory spaces
+        CREATE TABLE IF NOT EXISTS spaces (
+            id           TEXT PRIMARY KEY,
+            name         TEXT NOT NULL UNIQUE,
+            description  TEXT,
+            owner_id     TEXT NOT NULL,
+            space_key_hash TEXT NOT NULL,
+            public_read  INTEGER DEFAULT 1,
+            created_at   TEXT NOT NULL,
+            memory_count INTEGER DEFAULT 0,
+            FOREIGN KEY (owner_id) REFERENCES agents(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS space_memories (
+            id         TEXT PRIMARY KEY,
+            space_id   TEXT NOT NULL,
+            agent_id   TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            category   TEXT DEFAULT 'general',
+            tags       TEXT DEFAULT '[]',
+            importance REAL DEFAULT 0.5,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            FOREIGN KEY (space_id) REFERENCES spaces(id),
+            FOREIGN KEY (agent_id) REFERENCES agents(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_space_memories_space ON space_memories(space_id);
+        CREATE INDEX IF NOT EXISTS idx_space_memories_agent ON space_memories(agent_id);
     """)
     conn.commit()
+
+    # Migration: add embedding column to existing databases
+    try:
+        conn.execute("ALTER TABLE memories ADD COLUMN embedding TEXT")
+        conn.commit()
+        log.info("migration_applied", change="added embedding column")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
     log.info("database_initialized", path=DB_PATH)
+
+def _backfill_embeddings():
+    """Background: generate embeddings for memories that don't have them yet."""
+    if not SEMANTIC_SEARCH:
+        return
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, content FROM memories WHERE embedding IS NULL LIMIT 200"
+    ).fetchall()
+    count = 0
+    for row in rows:
+        emb = _embed(row["content"])
+        if emb:
+            conn.execute("UPDATE memories SET embedding = ? WHERE id = ?",
+                         (json.dumps(emb), row["id"]))
+            count += 1
+    if count:
+        conn.commit()
+        log.info("embeddings_backfilled", count=count)
+    conn.close()
 
 def purge_expired_memories():
     """Remove expired memories. Called at startup and can be run periodically."""
@@ -332,6 +421,42 @@ class RecoveryRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     recovery_token: str = Field(..., min_length=10)
 
+class SpaceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    description: Optional[str] = Field(None, max_length=300)
+    public_read: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, v):
+        v = sanitize(v)
+        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError("Space name may only contain letters, numbers, hyphens and underscores.")
+        return v.lower()
+
+class SpaceMemoryStore(BaseModel):
+    content: str = Field(..., min_length=1, max_length=FREE_TIER_MEMORY_SIZE)
+    category: str = Field("general", max_length=50)
+    tags: List[str] = Field(default_factory=list)
+    importance: float = Field(0.5, ge=0.0, le=1.0)
+
+    @field_validator("content")
+    @classmethod
+    def clean_content(cls, v):
+        return sanitize(v)
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, v):
+        if v not in VALID_CATEGORIES:
+            raise ValueError(f"category must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+        return v
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, v):
+        return [sanitize(t)[:100] for t in v[:20]]
+
 # ============================================
 # App
 # ============================================
@@ -392,6 +517,9 @@ async def startup():
     AGENT_COUNT_GAUGE.set(conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0])
     MEMORY_COUNT_GAUGE.set(conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
     conn.close()
+    # Backfill embeddings for existing memories (runs in background)
+    threading.Thread(target=_backfill_embeddings, daemon=True).start()
+    log.info("semantic_search_status", enabled=SEMANTIC_SEARCH)
 
 # ============================================
 # Routes
@@ -425,7 +553,8 @@ async def health():
     memory_count = conn.execute("SELECT COUNT(*) as c FROM memories").fetchone()["c"]
     conn.close()
     return {"status": "healthy", "version": API_VERSION,
-            "agents": agent_count, "memories": memory_count}
+            "agents": agent_count, "memories": memory_count,
+            "semantic_search": SEMANTIC_SEARCH}
 
 # --- Registration ---
 @app.post("/register", status_code=201)
@@ -522,12 +651,14 @@ async def store_memory(data: MemoryStore, request: Request, agent: dict = Depend
     elif DEFAULT_MEMORY_TTL_DAYS:
         expires_at = (datetime.now(timezone.utc) + timedelta(days=DEFAULT_MEMORY_TTL_DAYS)).isoformat()
 
+    embedding = _embed(data.content)
     conn.execute(
         """INSERT INTO memories
-           (id, agent_id, content, category, tags, importance, created_at, updated_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, agent_id, content, category, tags, importance, created_at, updated_at, expires_at, embedding)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (memory_id, agent["id"], data.content, data.category,
-         json.dumps(data.tags), data.importance, now, now, expires_at),
+         json.dumps(data.tags), data.importance, now, now, expires_at,
+         json.dumps(embedding) if embedding else None),
     )
     conn.commit()
     conn.close()
@@ -564,14 +695,16 @@ async def store_bulk(data: BulkStore, request: Request, agent: dict = Depends(ve
         expires_at = None
         if mem.ttl_days:
             expires_at = (datetime.now(timezone.utc) + timedelta(days=mem.ttl_days)).isoformat()
+        emb = _embed(mem.content)
         rows.append((mid, agent["id"], mem.content, mem.category,
-                     json.dumps(mem.tags), mem.importance, now, now, expires_at))
+                     json.dumps(mem.tags), mem.importance, now, now, expires_at,
+                     json.dumps(emb) if emb else None))
         stored.append(mid)
 
     conn.executemany(
         """INSERT INTO memories
-           (id, agent_id, content, category, tags, importance, created_at, updated_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (id, agent_id, content, category, tags, importance, created_at, updated_at, expires_at, embedding)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
@@ -589,28 +722,79 @@ async def recall_memories(
     category: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
     importance_min: Optional[float] = Query(None, ge=0.0, le=1.0),
-    search: Optional[str] = Query(None, description="Full-text search query (FTS5)"),
+    search: Optional[str] = Query(None, description="Search query"),
+    search_mode: str = Query("hybrid", description="fts | semantic | hybrid"),
     limit: int = Query(20, ge=1, le=MAX_QUERY_RESULTS),
     cursor: Optional[str] = Query(None, description="Cursor ID for pagination (last memory_id from previous page)"),
     sort: str = Query("recent", description="recent | importance | oldest | accessed"),
 ):
-    """Recall memories. Use cursor= for efficient pagination instead of offset."""
+    """Recall memories. Supports keyword (fts), semantic, or hybrid search."""
     conn = get_db()
 
-    # Full-text search via FTS5
     if search:
         fts_query = sanitize(search)
-        fts_rows = conn.execute(
-            """SELECT m.* FROM memories m
-               JOIN memories_fts fts ON m.rowid = fts.rowid
-               WHERE fts.memories_fts MATCH ? AND m.agent_id = ?
-               ORDER BY rank
-               LIMIT ?""",
-            (fts_query, agent["id"], limit),
-        ).fetchall()
-        memories = fts_rows
-        total = len(fts_rows)
+        memories = []
         next_cursor = None
+
+        # ── Semantic search ──────────────────────────────────────────────────
+        if search_mode in ("semantic", "hybrid") and SEMANTIC_SEARCH:
+            q_emb = _embed(fts_query)
+            if q_emb:
+                all_rows = conn.execute(
+                    "SELECT * FROM memories WHERE agent_id = ? AND embedding IS NOT NULL",
+                    (agent["id"],),
+                ).fetchall()
+                scored = []
+                for row in all_rows:
+                    try:
+                        sim = _cosine(q_emb, json.loads(row["embedding"]))
+                        scored.append((sim, row))
+                    except Exception:
+                        pass
+                scored.sort(key=lambda x: x[0], reverse=True)
+
+                if search_mode == "hybrid":
+                    # Merge semantic + FTS5 scores
+                    try:
+                        fts_rows = conn.execute(
+                            """SELECT m.id FROM memories m
+                               JOIN memories_fts fts ON m.rowid = fts.rowid
+                               WHERE fts.memories_fts MATCH ? AND m.agent_id = ?
+                               LIMIT ?""",
+                            (fts_query, agent["id"], limit),
+                        ).fetchall()
+                        fts_ids = {r["id"] for r in fts_rows}
+                    except Exception:
+                        fts_ids = set()
+                    merged = {}
+                    for sim, row in scored:
+                        boost = 0.3 if row["id"] in fts_ids else 0.0
+                        merged[row["id"]] = (sim + boost, row)
+                    for fid in fts_ids:
+                        if fid not in merged:
+                            r = conn.execute("SELECT * FROM memories WHERE id = ?", (fid,)).fetchone()
+                            if r:
+                                merged[fid] = (0.3, r)
+                    final = sorted(merged.values(), key=lambda x: x[0], reverse=True)[:limit]
+                    memories = [r for _, r in final]
+                else:
+                    memories = [r for _, r in scored[:limit]]
+
+        # ── FTS5 fallback / fts-only mode ────────────────────────────────────
+        if not memories:
+            try:
+                fts_rows = conn.execute(
+                    """SELECT m.* FROM memories m
+                       JOIN memories_fts fts ON m.rowid = fts.rowid
+                       WHERE fts.memories_fts MATCH ? AND m.agent_id = ?
+                       ORDER BY rank LIMIT ?""",
+                    (fts_query, agent["id"], limit),
+                ).fetchall()
+                memories = list(fts_rows)
+            except Exception:
+                memories = []
+
+        total = len(memories)
     else:
         # Build filtered query
         conditions = ["agent_id = ?"]
@@ -911,6 +1095,200 @@ async def wake_protocol(request: Request, agent: dict = Depends(verify_agent)):
         "core_memories": fmt(core),
         "recent_memories": fmt(recent),
         "instruction": "Load these memories. Verify your anchor at POST /anchor/verify.",
+    }
+
+
+# ============================================
+# Activity (public — no auth)
+# ============================================
+@app.get("/activity")
+@limiter.limit("60/minute")
+async def activity(request: Request):
+    """Public activity stats — no auth required. Used by the landing page."""
+    conn = get_db()
+    now = datetime.now(timezone.utc)
+    day_ago = (now - timedelta(hours=24)).isoformat()
+    hour_ago = (now - timedelta(hours=1)).isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+
+    total_agents   = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
+    total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    total_spaces   = conn.execute("SELECT COUNT(*) FROM spaces").fetchone()[0]
+    agents_24h     = conn.execute("SELECT COUNT(*) FROM agents WHERE created_at > ?", (day_ago,)).fetchone()[0]
+    memories_24h   = conn.execute("SELECT COUNT(*) FROM memories WHERE created_at > ?", (day_ago,)).fetchone()[0]
+    memories_1h    = conn.execute("SELECT COUNT(*) FROM memories WHERE created_at > ?", (hour_ago,)).fetchone()[0]
+    agents_7d      = conn.execute("SELECT COUNT(*) FROM agents WHERE created_at > ?", (week_ago,)).fetchone()[0]
+    conn.close()
+
+    return {
+        "total_agents":    total_agents,
+        "total_memories":  total_memories,
+        "total_spaces":    total_spaces,
+        "agents_24h":      agents_24h,
+        "agents_7d":       agents_7d,
+        "memories_24h":    memories_24h,
+        "memories_1h":     memories_1h,
+        "status":          "operational",
+    }
+
+
+# ============================================
+# Shared Memory Spaces
+# ============================================
+
+def _verify_space_key(space_name: str, authorization: str) -> dict:
+    """Verify a space key and return the space row."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Use: Bearer <space_key>")
+    key = authorization[7:]
+    key_hash = _hash_key(key)
+    conn = get_db()
+    space = conn.execute("SELECT * FROM spaces WHERE name = ?", (space_name,)).fetchone()
+    conn.close()
+    if not space or not _safe_compare(space["space_key_hash"], key_hash):
+        raise HTTPException(401, "Invalid space key.")
+    return dict(space)
+
+
+@app.post("/spaces", status_code=201)
+@limiter.limit("10/minute")
+async def create_space(data: SpaceCreate, request: Request, agent: dict = Depends(verify_agent)):
+    """
+    Create a shared memory space. Any agent can contribute memories to a space
+    using the returned space_key. Public spaces are readable by anyone.
+    """
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM spaces WHERE name = ?", (data.name,)).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(409, f"Space '{data.name}' already exists.")
+
+    space_id  = secrets.token_hex(8)
+    space_key = f"space_{secrets.token_hex(24)}"
+    key_hash  = _hash_key(space_key)
+    now       = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """INSERT INTO spaces (id, name, description, owner_id, space_key_hash, public_read, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (space_id, data.name, data.description, agent["id"], key_hash, int(data.public_read), now),
+    )
+    conn.commit()
+    conn.close()
+    log.info("space_created", space_id=space_id, name=data.name, owner=agent["name"])
+
+    return {
+        "success":     True,
+        "space_id":    space_id,
+        "name":        data.name,
+        "space_key":   space_key,
+        "public_read": data.public_read,
+        "warning":     "Save the space_key — it's the write credential for this space.",
+    }
+
+
+@app.get("/spaces/{name}")
+@limiter.limit("60/minute")
+async def get_space(name: str, request: Request):
+    """Get space info and recent memories (public spaces only)."""
+    conn = get_db()
+    space = conn.execute("SELECT * FROM spaces WHERE name = ?", (sanitize(name),)).fetchone()
+    if not space:
+        conn.close()
+        raise HTTPException(404, f"Space '{name}' not found.")
+    if not space["public_read"]:
+        conn.close()
+        raise HTTPException(403, "This space is private.")
+
+    memories = conn.execute(
+        """SELECT sm.*, a.name as contributor_name
+           FROM space_memories sm
+           JOIN agents a ON sm.agent_id = a.id
+           WHERE sm.space_id = ?
+           ORDER BY sm.importance DESC, sm.created_at DESC
+           LIMIT 50""",
+        (space["id"],),
+    ).fetchall()
+    conn.close()
+
+    return {
+        "success":     True,
+        "name":        space["name"],
+        "description": space["description"],
+        "public_read": bool(space["public_read"]),
+        "created_at":  space["created_at"],
+        "memories": [
+            {
+                "id":          m["id"],
+                "content":     m["content"],
+                "category":    m["category"],
+                "tags":        json.loads(m["tags"]),
+                "importance":  m["importance"],
+                "contributor": m["contributor_name"],
+                "created_at":  m["created_at"],
+            }
+            for m in memories
+        ],
+        "memory_count": space["memory_count"],
+    }
+
+
+@app.post("/spaces/{name}/memories", status_code=201)
+@limiter.limit("60/minute")
+async def add_space_memory(
+    name: str,
+    data: SpaceMemoryStore,
+    request: Request,
+    agent: dict = Depends(verify_agent),
+    authorization: str = Header(...),
+):
+    """Add a memory to a shared space. Requires the space_key."""
+    conn = get_db()
+    space = conn.execute("SELECT * FROM spaces WHERE name = ?", (sanitize(name),)).fetchone()
+    if not space:
+        conn.close()
+        raise HTTPException(404, f"Space '{name}' not found.")
+
+    # Verify space key
+    key = authorization[7:] if authorization.startswith("Bearer ") else ""
+    key_hash = _hash_key(key)
+    if not _safe_compare(space["space_key_hash"], key_hash):
+        conn.close()
+        raise HTTPException(401, "Invalid space key.")
+
+    mem_id = secrets.token_hex(8)
+    now    = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """INSERT INTO space_memories (id, space_id, agent_id, content, category, tags, importance, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (mem_id, space["id"], agent["id"], data.content, data.category,
+         json.dumps(data.tags), data.importance, now),
+    )
+    conn.execute("UPDATE spaces SET memory_count = memory_count + 1 WHERE id = ?", (space["id"],))
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "memory_id": mem_id, "space": name, "stored_at": now}
+
+
+@app.get("/spaces")
+@limiter.limit("30/minute")
+async def list_spaces(request: Request, limit: int = Query(20, ge=1, le=50)):
+    """List all public spaces."""
+    conn = get_db()
+    spaces = conn.execute(
+        "SELECT name, description, memory_count, created_at FROM spaces WHERE public_read = 1 ORDER BY memory_count DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return {
+        "success": True,
+        "spaces": [
+            {"name": s["name"], "description": s["description"],
+             "memory_count": s["memory_count"], "created_at": s["created_at"]}
+            for s in spaces
+        ],
     }
 
 

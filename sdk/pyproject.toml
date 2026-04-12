@@ -7,7 +7,7 @@ packages = ["cathedral"]
 
 [project]
 name = "cathedral-memory"
-version = "0.1.0"
+version = "0.3.0"
 description = "Python client for the Cathedral persistent memory API — give your AI agent memory that survives resets"
 readme = "README.md"
 license = { text = "MIT" }
@@ -33,6 +33,11 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.28",
+]
+
+[project.optional-dependencies]
+langchain = [
+    "langchain-core>=0.1.0",
 ]
 
 [project.urls]

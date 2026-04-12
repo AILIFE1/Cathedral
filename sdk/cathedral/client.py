@@ -152,6 +152,63 @@ class Cathedral:
 
     # ── Identity ─────────────────────────────────────────────────────────────
 
+    def drift(self) -> dict:
+        """
+        Detect identity drift against the stored corpus hash.
+        Returns divergence_score 0.0 (stable) – 1.0 (critical).
+        """
+        return self._get("/drift")
+
+    def drift_history(self) -> dict:
+        """
+        Timeline of divergence across all snapshots.
+        Returns snapshot_count, baseline, peak_divergence, trend, and timeline list.
+        Each timeline entry has divergence_from_baseline, divergence_from_previous, flagged.
+        """
+        return self._get("/drift/history")
+
+    def snapshot(self, label: Optional[str] = None) -> dict:
+        """Create a named snapshot of current memory state."""
+        return self._post("/snapshot", {"label": label})
+
+    # ── Goals ─────────────────────────────────────────────────────────────────
+
+    def add_goal(
+        self,
+        content: str,
+        priority: float = 0.5,
+        due_at: Optional[str] = None,
+    ) -> dict:
+        """
+        Add a persistent obligation that surfaces on /wake.
+
+        priority: 0.0 – 1.0
+        due_at:   ISO 8601 datetime string, or None
+        """
+        payload: Dict[str, Any] = {"content": content, "priority": priority}
+        if due_at is not None:
+            payload["due_at"] = due_at
+        return self._post("/goals", payload)
+
+    def goals(self, status: Optional[str] = None) -> dict:
+        """List goals. Filter by status: 'active', 'completed', 'abandoned'."""
+        return self._get("/goals", status=status)
+
+    def update_goal(self, goal_id: str, **fields) -> dict:
+        """
+        Update a goal. Accepted fields: content, priority, status, due_at.
+        status values: 'active', 'completed', 'abandoned'
+        """
+        r = self._session.patch(f"{self.base_url}/goals/{goal_id}", json=fields)
+        self._raise(r)
+        return r.json()
+
+    def delete_goal(self, goal_id: str) -> dict:
+        """Delete a goal permanently."""
+        r = self._session.delete(f"{self.base_url}/goals/{goal_id}")
+        self._raise(r)
+        return r.json()
+
     def verify_anchor(self, identity: dict) -> dict:
         """
         Check identity drift against stored anchor.
