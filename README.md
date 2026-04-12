@@ -117,6 +117,52 @@ Or with Docker:
 docker compose up
 ```
 
+### Option 4 — MCP server (Claude Code, Cursor, Continue)
+
+```bash
+# Install locally (stdio transport)
+uvx cathedral-mcp
+```
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "cathedral": {
+      "command": "uvx",
+      "args": ["cathedral-mcp"],
+      "env": { "CATHEDRAL_API_KEY": "your_key" }
+    }
+  }
+}
+```
+
+### Option 5 — Remote MCP server (Claude API, Managed Agents)
+
+Cathedral runs a public MCP endpoint at `https://cathedral-ai.com/mcp`. Use it directly from the Claude API without any local setup:
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+response = client.beta.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Wake up and tell me who you are."}],
+    mcp_servers=[{
+        "type": "url",
+        "url": "https://cathedral-ai.com/mcp",
+        "name": "cathedral",
+        "authorization_token": "your_cathedral_api_key"
+    }],
+    tools=[{"type": "mcp_toolset", "mcp_server_name": "cathedral"}],
+    betas=["mcp-client-2025-11-20"]
+)
+```
+
+The bearer token is your Cathedral API key — no server-side config needed. Each user brings their own key.
+
 ---
 
 ## API Reference

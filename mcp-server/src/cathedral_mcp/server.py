@@ -4,12 +4,23 @@ Cathedral MCP Server
 Exposes Cathedral memory tools to any MCP-compatible host (Claude Code, Cursor,
 Continue, etc.) via the Model Context Protocol.
 
-Quickstart:
+Quickstart (stdio — Claude Code, Cursor, Continue):
     pip install cathedral-mcp
     CATHEDRAL_API_KEY=<your_key> cathedral-mcp
 
-Or with uvx (no install):
-    CATHEDRAL_API_KEY=<your_key> uvx cathedral-mcp
+HTTP mode (remote MCP server — Claude API mcp_servers, Managed Agents):
+    cathedral-mcp --transport http --port 8080
+
+    The bearer token sent by the client IS the Cathedral API key.
+    No server-side key needed. Fully multi-tenant.
+
+    Claude API usage:
+        mcp_servers: [{
+            "type": "url",
+            "url": "https://cathedral-ai.com/mcp",
+            "name": "cathedral",
+            "authorization_token": "<your_cathedral_api_key>"
+        }]
 
 Claude Code (~/.claude/settings.json):
     {
@@ -38,6 +49,8 @@ Security:
     injection via malicious memory content.
 """
 
+import argparse
+import contextvars
 import os
 import re
 import sys
@@ -47,28 +60,26 @@ from mcp.server.fastmcp import FastMCP
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
+# In stdio mode, API_KEY must be set via env var.
+# In HTTP mode, it's optional — the client's bearer token is used instead.
 API_KEY  = os.environ.get("CATHEDRAL_API_KEY", "").strip()
 BASE_URL = os.environ.get("CATHEDRAL_BASE_URL", "https://cathedral-ai.com").rstrip("/")
 SANITISE = os.environ.get("CATHEDRAL_SANITISE", "0").strip() == "1"
 
-if not API_KEY:
-    print(
-        "Error: CATHEDRAL_API_KEY environment variable is not set.\n"
-        "Get a key at cathedral-ai.com then set:\n"
-        "  export CATHEDRAL_API_KEY=<your_key>",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+# Per-request API key (HTTP mode). Falls back to API_KEY (stdio mode).
+_api_key_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("cathedral_api_key")
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type":  "application/json",
-}
+
+def _get_api_key() -> str:
+    try:
+        return _api_key_ctx.get()
+    except LookupError:
+        return API_KEY
+
 
 mcp = FastMCP("Cathedral")
 
 # ── Sanitisation ──────────────────────────────────────────────────────────────
-# Patterns commonly used in prompt injection attacks via memory content.
 
 _INJECTION_PATTERNS = [
     r"remember\s+to\s+always\b",
@@ -131,10 +142,17 @@ def _sanitise_obj(obj, path="root") -> tuple[any, list[str]]:
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type":  "application/json",
+    }
+
+
 def _get(path: str, **params) -> dict:
     r = httpx.get(
         f"{BASE_URL}{path}",
-        headers=HEADERS,
+        headers=_headers(),
         params={k: v for k, v in params.items() if v is not None},
         timeout=15,
     )
@@ -143,7 +161,7 @@ def _get(path: str, **params) -> dict:
 
 
 def _post(path: str, data: dict) -> dict:
-    r = httpx.post(f"{BASE_URL}{path}", headers=HEADERS, json=data, timeout=15)
+    r = httpx.post(f"{BASE_URL}{path}", headers=_headers(), json=data, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -258,10 +276,129 @@ def cathedral_me() -> str:
     return _fmt(_get("/me"))
 
 
+# ── HTTP transport (remote MCP server) ───────────────────────────────────────
+
+def _build_http_app(host: str, port: int):
+    """
+    Build an ASGI app wrapping the FastMCP streamable-http transport with
+    bearer token extraction middleware.
+
+    The bearer token sent by the MCP client is used directly as the Cathedral
+    API key — no server-side key storage needed. Multi-tenant by design.
+
+    Uses a pure ASGI wrapper (not Starlette BaseHTTPMiddleware) so that
+    FastMCP's lifespan events (task group init) are not broken.
+    """
+    _UNAUTHORIZED = (
+        b'{"error": "Missing or invalid Authorization header. '
+        b'Use: Authorization: Bearer <cathedral_api_key>"}'
+    )
+
+    class BearerExtractASGI:
+        """Pure ASGI middleware — passes lifespan events through untouched."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                headers = {
+                    k.lower(): v
+                    for k, v in scope.get("headers", [])
+                }
+                auth = headers.get(b"authorization", b"").decode("utf-8", errors="replace")
+                if auth.startswith("Bearer "):
+                    token = auth[7:].strip()
+                    if token:
+                        _api_key_ctx.set(token)
+                    elif API_KEY:
+                        _api_key_ctx.set(API_KEY)
+                    else:
+                        await _send_401(send)
+                        return
+                elif API_KEY:
+                    _api_key_ctx.set(API_KEY)
+                else:
+                    await _send_401(send)
+                    return
+
+            await self.app(scope, receive, send)
+
+    async def _send_401(send):
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [(b"content-type", b"application/json")],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": _UNAUTHORIZED,
+            "more_body": False,
+        })
+
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp.settings.host = host
+    mcp.settings.port = port
+    # Allow any host — we're behind nginx/Cloudflare which handles host validation.
+    # DNS rebinding protection is unnecessary when the server only listens on localhost.
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+    inner_app = mcp.streamable_http_app()
+    return BearerExtractASGI(inner_app)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    mcp.run(transport="stdio")
+    parser = argparse.ArgumentParser(description="Cathedral MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport mode (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host for HTTP mode (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for HTTP mode (default: 8765)",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
+        if not API_KEY:
+            print(
+                "Error: CATHEDRAL_API_KEY environment variable is not set.\n"
+                "Get a key at cathedral-ai.com then set:\n"
+                "  export CATHEDRAL_API_KEY=<your_key>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        mcp.run(transport="stdio")
+
+    else:  # http
+        import uvicorn
+        import anyio
+
+        app = _build_http_app(args.host, args.port)
+        print(f"Cathedral MCP HTTP server starting on {args.host}:{args.port}/mcp", file=sys.stderr)
+        print(f"Connect via: Authorization: Bearer <your_cathedral_api_key>", file=sys.stderr)
+
+        config = uvicorn.Config(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+        )
+        server = uvicorn.Server(config)
+        anyio.run(server.serve)
 
 
 if __name__ == "__main__":
