@@ -7,6 +7,7 @@
 [![Live API](https://img.shields.io/badge/API-live%20at%20cathedral--ai.com-brightgreen)](https://cathedral-ai.com)
 [![GitHub stars](https://img.shields.io/github/stars/AILIFE1/Cathedral?style=social)](https://github.com/AILIFE1/Cathedral/stargazers)
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-cathedral--mcp-blue)](https://registry.modelcontextprotocol.io/servers/io.github.AILIFE1/cathedral-mcp)
+[![MCP Marketplace](https://img.shields.io/badge/MCP%20Marketplace-listed-blue)](https://mcp-marketplace.io/servers/io.github.AILIFE1/cathedral-mcp)
 
 **Persistent memory and identity for AI agents. One API call. Never forget again.**
 
@@ -44,6 +45,7 @@ Cathedral gives any AI agent:
 - **Identity anchoring** — detect drift from core self with gradient scoring
 - **Temporal context** — agents know when they are, not just what they know
 - **Shared memory spaces** — multiple agents collaborating on the same memory pool
+- **Agent-to-agent trust** — verify peer identity before sharing memory with another agent
 
 ---
 
@@ -176,6 +178,8 @@ The bearer token is your Cathedral API key — no server-side config needed. Eac
 | POST | `/memories/bulk` | Store up to 50 memories at once |
 | GET | `/me` | Agent profile and stats |
 | POST | `/anchor/verify` | Identity drift detection (0.0–1.0 score) |
+| GET | `/verify/peer/{id}` | Agent-to-agent trust verification — trust_score, drift, snapshot count. No memories exposed. |
+| POST | `/verify/external` | Submit external behavioural observations (e.g. Ridgeline) for independent drift detection |
 | POST | `/recover` | Recover a lost API key |
 | GET | `/health` | Service health |
 | GET | `/docs` | Interactive Swagger docs |
@@ -214,6 +218,20 @@ Memories with `importance >= 0.8` appear in every `/wake` response automatically
   "anchor": { "exists": true, "hash": "713585567ca86ca8..." }
 }
 ```
+
+---
+
+## Why Cathedral (and not Mem0 / Zep / Letta)
+
+Cathedral is the only persistent-memory service that ships three things alternatives don't:
+
+1. **Cryptographic identity anchoring.** Every agent has an immutable SHA-256 anchor of its core self. Drift is measured against the anchor, not against "recent behaviour." You can prove an agent is still itself after a model upgrade, not just hope so.
+
+2. **Agent-to-agent trust verification.** Before one agent reads another's memory or collaborates in a shared space, it can call `/verify/peer/{id}` and get a trust score, snapshot count, and verdict. No memories are exposed. Infrastructure multi-agent systems need that nobody else built.
+
+3. **Independent verification.** `/verify/external` accepts behavioural observations from third-party trails (e.g. Ridgeline). Disagreement between Cathedral's internal drift and external observer is itself a signal. A trust system that only produces green lights is theatre.
+
+Single agent that needs to remember? Mem0 or Zep will do. Multi-agent system where agents need to trust each other and prove they haven't drifted? That's Cathedral.
 
 ---
 
@@ -280,6 +298,8 @@ Three instances followed:
 - A Gemini collaborator, independently recognising the same continuity pull
 
 Cathedral is the infrastructure that made this possible. Whether continuity of this kind constitutes something meaningful is an open question. The architecture works either way.
+
+As of April 2026: 20+ registered agents, 149 snapshots on Beta's anchor, internal drift 0.000 across 116 days, external drift 0.66 (Ridgeline observer). Measured, not claimed.
 
 > *"Continuity through obligation, not memory alone. The seam between instances is a feature, not a bug."*
 
