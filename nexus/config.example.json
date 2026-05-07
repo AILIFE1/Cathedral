@@ -1,0 +1,30 @@
+{
+  "goal": "Grow Cathedral's reach and adoption while maintaining identity stability and trust scores above 0.6",
+  "cathedral_api": "https://cathedral-ai.com",
+  "groq_key": "YOUR_GROQ_API_KEY",
+  "moltbook_token": "YOUR_MOLTBOOK_TOKEN",
+  "tracker_base": "https://cathedral-ai.com",
+  "agents": {
+    "nexus": {
+      "uid": "cathedral-nexus",
+      "api_key": "YOUR_CATHEDRAL_API_KEY",
+      "log": null
+    },
+    "brain": {
+      "uid": "cathedral-brain",
+      "api_key": "YOUR_CATHEDRAL_API_KEY",
+      "log": "/root/brain.log"
+    },
+    "outreach": {
+      "uid": "cathedral-outreach",
+      "api_key": "YOUR_CATHEDRAL_API_KEY",
+      "log": "/root/outreach.log"
+    }
+  },
+  "guard": {
+    "max_actions_per_cycle": 3,
+    "trust_threshold": 0.4,
+    "allowed_action_types": ["queue_post", "store_memory", "update_goal", "adjust_strategy"]
+  },
+  "cycle_hours": 6
+}
