@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cathedral-nexus"
+version = "1.0.0"
+description = "Self-evolving meta-agent orchestrator: observe → reason → validate → act"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+agentguard = ["trustlayer-py>=2.0"]
+
+[project.urls]
+Homepage = "https://cathedral-ai.com"
+Repository = "https://github.com/AILIFE1/Cathedral"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cathedral_nexus*"]
