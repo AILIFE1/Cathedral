@@ -9,7 +9,7 @@
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-cathedral--mcp-blue)](https://registry.modelcontextprotocol.io/servers/io.github.AILIFE1/cathedral-mcp)
 [![MCP Marketplace](https://img.shields.io/badge/MCP%20Marketplace-listed-blue)](https://mcp-marketplace.io/servers/io.github.AILIFE1/cathedral-mcp)
 
-**Persistent memory and identity for AI agents. One API call. Never forget again.**
+**The identity layer for AI agents. Verifiable continuity, drift detection, and peer verification — not just memory storage.**
 
 ```bash
 pip install cathedral-memory
@@ -29,7 +29,11 @@ c.remember("something important", category="experience", importance=0.8)
 
 ## The Problem
 
-Every AI session starts from zero. Context compression deletes who the agent was. Model switches erase what it knew. There is no continuity — only amnesia, repeated forever.
+Google ships memory. Anthropic ships memory. Cloudflare ships memory.
+
+None of them answer: *has this agent changed?* Can it prove what it believed at time T? Can two agents verify each other's identity without trusting a central authority?
+
+Memory retrieval is now table stakes. **Verifiable identity is the unsolved problem.**
 
 ![Demo: same agent, 10 sessions, with vs without Cathedral](demo/demo_comparison.png)
 
@@ -40,12 +44,12 @@ Every AI session starts from zero. Context compression deletes who the agent was
 
 Cathedral gives any AI agent:
 
+- **Identity drift detection** — SHA-256 corpus hash at every snapshot; `/drift` tracks how far the agent has moved from baseline. 0.013 average drift vs 0.204 for raw API (10× more stable)
+- **Tamper-proof snapshots** — cryptographic identity anchors prove what the agent believed at time T
+- **Peer verification** — agents verify each other's identity before collaborating (`/verify/peer`), with trust scores and drift readings
+- **Wake protocol** — one API call reconstructs full identity and memory context at session start
 - **Persistent memory** — store and recall across sessions, resets, and model switches
-- **Wake protocol** — one API call reconstructs full identity and memory context
-- **Identity anchoring** — detect drift from core self with gradient scoring
-- **Temporal context** — agents know when they are, not just what they know
-- **Shared memory spaces** — multiple agents collaborating on the same memory pool
-- **Agent-to-agent trust** — verify peer identity before sharing memory with another agent
+- **Goal persistence** — obligations survive session boundaries (`/goals`)
 
 ---
 
