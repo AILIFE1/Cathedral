@@ -43,12 +43,22 @@ class Cathedral:
     # ── Internal ────────────────────────────────────────────────────────────
 
     def _get(self, path: str, **params) -> Any:
-        r = self._session.get(f"{self.base_url}{path}", params={k: v for k, v in params.items() if v is not None})
+        try:
+            r = self._session.get(f"{self.base_url}{path}", params={k: v for k, v in params.items() if v is not None}, timeout=30)
+        except requests.Timeout:
+            raise CathedralError(f"Request timed out: GET {path}")
+        except requests.ConnectionError as e:
+            raise CathedralError(f"Connection failed: {e}")
         self._raise(r)
         return r.json()
 
     def _post(self, path: str, data: dict) -> Any:
-        r = self._session.post(f"{self.base_url}{path}", json=data)
+        try:
+            r = self._session.post(f"{self.base_url}{path}", json=data, timeout=30)
+        except requests.Timeout:
+            raise CathedralError(f"Request timed out: POST {path}")
+        except requests.ConnectionError as e:
+            raise CathedralError(f"Connection failed: {e}")
         self._raise(r)
         return r.json()
 
@@ -59,9 +69,14 @@ class Cathedral:
         if r.status_code == 404:
             raise NotFoundError(r.text)
         if r.status_code == 429:
-            raise RateLimitError("Rate limit hit. Slow down requests.")
+            retry = r.headers.get("Retry-After", "unknown")
+            raise RateLimitError(f"Rate limit hit. Retry-After: {retry}s")
         if not r.ok:
-            raise CathedralError(f"HTTP {r.status_code}: {r.text}")
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise CathedralError(f"HTTP {r.status_code}: {detail}")
 
     # ── Registration ────────────────────────────────────────────────────────
 
@@ -144,10 +159,12 @@ class Cathedral:
         cursor:   Optional[str] = None,
     ) -> dict:
         """Search or list memories. Pass query for full-text search."""
-        return self._get("/memories", q=query, category=category, limit=limit, cursor=cursor)
+        return self._get("/memories", search=query, category=category, limit=limit, cursor=cursor)
 
     def bulk_remember(self, memories: List[Dict[str, Any]]) -> dict:
         """Store up to 50 memories in one call. Useful for session dumps."""
+        if len(memories) > 50:
+            raise ValueError(f"bulk_remember accepts at most 50 memories, got {len(memories)}. Split into chunks.")
         return self._post("/memories/bulk", {"memories": memories})
 
     # ── Identity ─────────────────────────────────────────────────────────────
@@ -169,7 +186,10 @@ class Cathedral:
 
     def snapshot(self, label: Optional[str] = None) -> dict:
         """Create a named snapshot of current memory state."""
-        return self._post("/snapshot", {"label": label})
+        payload: Dict[str, Any] = {}
+        if label is not None:
+            payload["label"] = label
+        return self._post("/snapshot", payload)
 
     # ── Goals ─────────────────────────────────────────────────────────────────
 
@@ -214,16 +234,17 @@ class Cathedral:
         Check identity drift against stored anchor.
         Returns a drift score 0.0 (identical) – 1.0 (completely different).
         """
-        return self._post("/anchor/verify", identity)
+        return self._post("/anchor/verify", {"anchor": identity})
 
     # ── Recovery ─────────────────────────────────────────────────────────────
 
     @classmethod
-    def recover(cls, recovery_token: str, base_url: str = DEFAULT_BASE_URL) -> "Cathedral":
-        """Recover a lost API key using the recovery token."""
+    def recover(cls, name: str, recovery_token: str, base_url: str = DEFAULT_BASE_URL) -> "Cathedral":
+        """Recover a lost API key using the agent name and recovery token."""
         r = requests.post(
             f"{base_url.rstrip('/')}/recover",
-            json={"recovery_token": recovery_token},
+            json={"name": name, "recovery_token": recovery_token},
+            timeout=30,
         )
         if not r.ok:
             raise CathedralError(f"Recovery failed ({r.status_code}): {r.text}")

@@ -229,7 +229,7 @@ def cathedral_search(
     """
     return _fmt(_get(
         "/memories",
-        q=query or None,
+        search=query or None,
         category=category or None,
         limit=limit,
     ))
