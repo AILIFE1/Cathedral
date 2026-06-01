@@ -239,6 +239,23 @@ def init_db():
 
         CREATE INDEX IF NOT EXISTS idx_space_memories_space ON space_memories(space_id);
         CREATE INDEX IF NOT EXISTS idx_space_memories_agent ON space_memories(agent_id);
+
+        CREATE TABLE IF NOT EXISTS conflicts (
+            id              TEXT PRIMARY KEY,
+            agent_id        TEXT NOT NULL,
+            memory_a_id     TEXT NOT NULL,
+            memory_b_id     TEXT NOT NULL,
+            content_a       TEXT NOT NULL,
+            content_b       TEXT NOT NULL,
+            similarity      REAL NOT NULL,
+            detected_at     TEXT NOT NULL,
+            resolved_at     TEXT,
+            resolution      TEXT,
+            resolved_content TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conflicts_agent    ON conflicts(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON conflicts(agent_id, resolved_at);
     """)
     conn.commit()
 
@@ -272,6 +289,75 @@ def _backfill_embeddings():
         conn.commit()
         log.info("embeddings_backfilled", count=count)
     conn.close()
+
+def _detect_and_record_conflict(conn: sqlite3.Connection, agent_id: str, new_id: str, new_content: str, new_embedding):
+    """
+    After storing a memory, check if any existing memory is semantically similar
+    but content-divergent. If so, write a conflict record.
+    Runs in-process — caller holds the connection.
+    """
+    SIMILARITY_THRESHOLD = 0.85   # same topic
+    DIVERGENCE_THRESHOLD = 0.35   # but different enough to be a conflict
+
+    def _jaccard(a: str, b: str) -> float:
+        sa, sb = set(a.lower().split()), set(b.lower().split())
+        if not sa or not sb:
+            return 0.0
+        return len(sa & sb) / len(sa | sb)
+
+    candidates = []
+
+    if new_embedding and SEMANTIC_SEARCH:
+        # Compare against memories that have embeddings, excluding the new one
+        rows = conn.execute(
+            "SELECT id, content, embedding FROM memories WHERE agent_id = ? AND id != ? AND embedding IS NOT NULL LIMIT 200",
+            (agent_id, new_id),
+        ).fetchall()
+        for row in rows:
+            try:
+                emb = json.loads(row["embedding"])
+                sim = _cosine(new_embedding, emb)
+                if sim >= SIMILARITY_THRESHOLD:
+                    candidates.append((row["id"], row["content"], sim))
+            except Exception:
+                pass
+    else:
+        # Fallback: FTS search using significant words from the content
+        import re as _re
+        words = [w for w in _re.sub(r'[^a-zA-Z0-9 ]', ' ', new_content).split() if len(w) > 4][:6]
+        if words:
+            safe_query = ' '.join(words)
+            try:
+                rows = conn.execute(
+                    "SELECT m.id, m.content FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE memories_fts MATCH ? AND m.agent_id = ? AND m.id != ? LIMIT 10",
+                    (safe_query, agent_id, new_id),
+                ).fetchall()
+                for row in rows:
+                    candidates.append((row["id"], row["content"], 0.9))
+            except Exception:
+                pass
+
+    for mem_id, mem_content, similarity in candidates:
+        jaccard = _jaccard(new_content, mem_content)
+        # High semantic similarity but low word overlap = same topic, different claim
+        if jaccard < (1.0 - DIVERGENCE_THRESHOLD):
+            # Check we haven't already recorded this pair
+            existing = conn.execute(
+                "SELECT id FROM conflicts WHERE agent_id = ? AND ((memory_a_id = ? AND memory_b_id = ?) OR (memory_a_id = ? AND memory_b_id = ?)) AND resolved_at IS NULL",
+                (agent_id, mem_id, new_id, new_id, mem_id),
+            ).fetchone()
+            if existing:
+                continue
+            conflict_id = secrets.token_hex(8)
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT INTO conflicts (id, agent_id, memory_a_id, memory_b_id, content_a, content_b, similarity, detected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (conflict_id, agent_id, mem_id, new_id, mem_content, new_content, round(similarity, 4), now),
+            )
+            log.info("conflict_detected", agent_id=agent_id, conflict_id=conflict_id, similarity=round(similarity, 4))
+
+    conn.commit()
+
 
 def purge_expired_memories():
     """Remove expired memories. Called at startup and can be run periodically."""
@@ -661,6 +747,13 @@ async def store_memory(data: MemoryStore, request: Request, agent: dict = Depend
          json.dumps(embedding) if embedding else None),
     )
     conn.commit()
+
+    # Conflict detection — runs after commit so the new memory is queryable
+    try:
+        _detect_and_record_conflict(conn, agent["id"], memory_id, data.content, embedding)
+    except Exception as e:
+        log.warning("conflict_detection_error", error=str(e))
+
     conn.close()
     MEMORY_COUNT_GAUGE.inc()
 
@@ -1289,6 +1382,111 @@ async def list_spaces(request: Request, limit: int = Query(20, ge=1, le=50)):
              "memory_count": s["memory_count"], "created_at": s["created_at"]}
             for s in spaces
         ],
+    }
+
+
+@app.get("/conflicts")
+@limiter.limit("30/minute")
+async def list_conflicts(
+    request: Request,
+    resolved: bool = Query(False, description="Include resolved conflicts"),
+    limit: int = Query(20, ge=1, le=50),
+    agent: dict = Depends(verify_agent),
+):
+    """List memory conflicts detected for this agent."""
+    conn = get_db()
+    query = "SELECT * FROM conflicts WHERE agent_id = ?"
+    params = [agent["id"]]
+    if not resolved:
+        query += " AND resolved_at IS NULL"
+    query += " ORDER BY detected_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return {
+        "success": True,
+        "conflicts": [
+            {
+                "id": r["id"],
+                "memory_a_id": r["memory_a_id"],
+                "memory_b_id": r["memory_b_id"],
+                "content_a": r["content_a"],
+                "content_b": r["content_b"],
+                "similarity": r["similarity"],
+                "detected_at": r["detected_at"],
+                "resolved_at": r["resolved_at"],
+                "resolution": r["resolution"],
+                "resolved_content": r["resolved_content"],
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+class ConflictResolve(BaseModel):
+    resolution: str = Field(..., description="keep_a | keep_b | merge")
+    resolved_content: Optional[str] = Field(None, description="Required if resolution=merge")
+
+
+@app.post("/conflicts/{conflict_id}/resolve")
+@limiter.limit("30/minute")
+async def resolve_conflict(
+    conflict_id: str,
+    data: ConflictResolve,
+    request: Request,
+    agent: dict = Depends(verify_agent),
+):
+    """Resolve a memory conflict by keeping one version or providing a merged truth."""
+    if data.resolution not in ("keep_a", "keep_b", "merge"):
+        raise HTTPException(400, "resolution must be keep_a, keep_b, or merge")
+    if data.resolution == "merge" and not data.resolved_content:
+        raise HTTPException(400, "resolved_content required when resolution=merge")
+
+    conn = get_db()
+    conflict = conn.execute(
+        "SELECT * FROM conflicts WHERE id = ? AND agent_id = ?", (conflict_id, agent["id"])
+    ).fetchone()
+    if not conflict:
+        conn.close()
+        raise HTTPException(404, "Conflict not found")
+    if conflict["resolved_at"]:
+        conn.close()
+        raise HTTPException(409, "Conflict already resolved")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Determine winning content
+    if data.resolution == "keep_a":
+        winner_content = conflict["content_a"]
+        loser_id = conflict["memory_b_id"]
+    elif data.resolution == "keep_b":
+        winner_content = conflict["content_b"]
+        loser_id = conflict["memory_a_id"]
+    else:
+        winner_content = sanitize(data.resolved_content)
+        loser_id = conflict["memory_b_id"]  # archive b, update a with merged
+
+    # Mark loser as superseded via tag
+    conn.execute(
+        "UPDATE memories SET tags = json_insert(tags, '$[#]', 'superseded'), updated_at = ? WHERE id = ?",
+        (now, loser_id),
+    )
+
+    # Mark conflict resolved
+    conn.execute(
+        "UPDATE conflicts SET resolved_at = ?, resolution = ?, resolved_content = ? WHERE id = ?",
+        (now, data.resolution, winner_content, conflict_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "conflict_id": conflict_id,
+        "resolution": data.resolution,
+        "resolved_at": now,
+        "resolved_content": winner_content,
     }
 
 
