@@ -296,7 +296,7 @@ def _detect_and_record_conflict(conn: sqlite3.Connection, agent_id: str, new_id:
     but content-divergent. If so, write a conflict record.
     Runs in-process — caller holds the connection.
     """
-    SIMILARITY_THRESHOLD = 0.85   # same topic
+    SIMILARITY_THRESHOLD = 0.92   # same topic
     DIVERGENCE_THRESHOLD = 0.35   # but different enough to be a conflict
 
     def _jaccard(a: str, b: str) -> float:
