@@ -18,7 +18,7 @@ from .client import Cathedral
 from .temporal import build_temporal_context
 from .exceptions import CathedralError, AuthError, NotFoundError, RateLimitError
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "Cathedral",
     "build_temporal_context",

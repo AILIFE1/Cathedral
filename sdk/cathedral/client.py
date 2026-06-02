@@ -236,6 +236,57 @@ class Cathedral:
         """
         return self._post("/anchor/verify", {"anchor": identity})
 
+    # ── Succession ───────────────────────────────────────────────────────────
+
+    def succession_prepare(self, note: Optional[str] = None) -> dict:
+        """
+        Prepare a succession package for handoff to a successor agent.
+        Exports all memories + active goals, computes identity fingerprint,
+        anchors package hash on BCH blockchain.
+
+        Returns package_id — share this with your successor out-of-band.
+        They call succession_accept(package_id) to complete the handoff.
+        """
+        return self._post("/succession/prepare", {"note": note})
+
+    def succession_accept(
+        self,
+        package_id: str,
+        import_memories: bool = True,
+        import_goals: bool = True,
+    ) -> dict:
+        """
+        Accept a succession package from a predecessor agent.
+        Imports memories + goals and returns a lineage hash proving
+        the chain of custody.
+        """
+        return self._post("/succession/accept", {
+            "package_id": package_id,
+            "import_memories": import_memories,
+            "import_goals": import_goals,
+        })
+
+    def succession_chain(self, agent_name: str) -> dict:
+        """
+        Public. Return the full verified lineage chain for an agent.
+        No API key required — anyone can verify.
+        """
+        r = requests.get(
+            f"{self.base_url}/succession/chain/{agent_name}", timeout=30
+        )
+        self._raise(r)
+        return r.json()
+
+    def succession_package(self, package_id: str) -> dict:
+        """
+        Public. Inspect a succession package (stats only, no memory content).
+        """
+        r = requests.get(
+            f"{self.base_url}/succession/package/{package_id}", timeout=30
+        )
+        self._raise(r)
+        return r.json()
+
     # ── Recovery ─────────────────────────────────────────────────────────────
 
     @classmethod
