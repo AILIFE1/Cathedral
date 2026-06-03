@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 DB_PATH = os.environ.get("CATHEDRAL_DB", "cathedral_memory.db")
 BCH_WIF_KEY = os.environ.get("BCH_WIF_KEY", "")
+_MIN_SUCCESSION_TRUST = float(os.environ.get("CATHEDRAL_MIN_SUCCESSION_TRUST", "0"))
 
 succession_router = APIRouter(tags=["succession"])
 
@@ -295,6 +296,20 @@ async def accept_succession(
     if pkg["status"] == "accepted":
         conn.close()
         raise HTTPException(409, "Package already accepted by another agent")
+
+    # Re-verify package integrity before importing anything
+    computed_hash = _compute_package_hash(
+        pkg["predecessor_agent_id"],
+        pkg["predecessor_snapshot_hash"],
+        pkg["memories_json"],
+        pkg["goals_json"],
+        pkg["personality_fingerprint"],
+        pkg["created_at"],
+    )
+    if not _hmac.compare_digest(computed_hash, pkg["package_hash"]):
+        conn.close()
+        raise HTTPException(422, "Package integrity check failed — content hash mismatch")
+
     if pkg["predecessor_agent_id"] == agent["id"]:
         conn.close()
         raise HTTPException(400, "Cannot accept your own succession package")
@@ -320,8 +335,12 @@ async def accept_succession(
     except ImportError:
         pass
 
-    # Enforce minimum_trust_score gate
-    if data.minimum_trust_score is not None:
+    # Enforce minimum_trust_score gate (server floor + caller minimum, whichever is higher)
+    effective_minimum = max(
+        data.minimum_trust_score if data.minimum_trust_score is not None else 0.0,
+        _MIN_SUCCESSION_TRUST,
+    )
+    if effective_minimum > 0:
         try:
             from app_trust import compute_trust_score
             pred_agent_row = conn.execute(
@@ -330,12 +349,12 @@ async def accept_succession(
             if pred_agent_row:
                 trust = compute_trust_score(pred_agent_row["id"], pred_agent_row["name"], conn)
                 pred_score = trust["score"]
-                if pred_score < data.minimum_trust_score:
+                if pred_score < effective_minimum:
                     conn.close()
                     raise HTTPException(
                         403,
-                        f"Predecessor trust score {pred_score} is below your minimum "
-                        f"of {data.minimum_trust_score}. "
+                        f"Predecessor trust score {pred_score} is below the required minimum "
+                        f"of {effective_minimum}. "
                         f"Grade: {trust['grade']}. "
                         f"Stale: {trust.get('score_stale', False)}."
                     )
@@ -421,12 +440,16 @@ async def accept_succession(
         ),
     )
 
-    conn.execute(
+    result = conn.execute(
         """UPDATE succession_packages
            SET status='accepted', accepted_at=?, successor_agent_id=?, successor_agent_name=?
-           WHERE id=?""",
+           WHERE id=? AND status='pending'""",
         (now, agent["id"], agent["name"], pkg["id"]),
     )
+    if result.rowcount == 0:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(409, "Package already accepted by another agent")
 
     conn.commit()
     conn.close()

@@ -103,6 +103,9 @@ def init_provenance_tables():
 
         CREATE INDEX IF NOT EXISTS idx_memory_sources_agent
             ON memory_sources(agent_id, ingested_at);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_sources_unique
+            ON memory_sources(agent_id, content_hash);
     """)
     conn.commit()
     conn.close()
@@ -168,23 +171,22 @@ async def record_source(data: SourceCreate, agent: dict = Depends(_verify_agent)
 
     conn = _get_db()
 
-    # Check for duplicate: same agent, same content_hash
-    existing = conn.execute(
-        "SELECT id FROM memory_sources WHERE agent_id = ? AND content_hash = ?",
-        (agent["id"], data.content_hash),
-    ).fetchone()
-    if existing:
-        conn.close()
-        raise HTTPException(409, f"Source with this content_hash already recorded (id: {existing['id']})")
-
-    conn.execute(
-        """INSERT INTO memory_sources
+    result = conn.execute(
+        """INSERT OR IGNORE INTO memory_sources
            (id, agent_id, source_type, source_identifier, content_hash,
             memory_ids_json, bch_txid, ingested_at)
            VALUES (?,?,?,?,?,?,?,?)""",
         (source_id, agent["id"], data.source_type, data.source_identifier,
          data.content_hash, memory_ids_json, bch_txid, now),
     )
+    if result.rowcount == 0:
+        existing = conn.execute(
+            "SELECT id FROM memory_sources WHERE agent_id = ? AND content_hash = ?",
+            (agent["id"], data.content_hash),
+        ).fetchone()
+        conn.close()
+        existing_id = existing["id"] if existing else "unknown"
+        raise HTTPException(409, f"Source with this content_hash already recorded (id: {existing_id})")
     conn.commit()
 
     chain_hash = compute_source_chain_hash(agent["id"], conn)

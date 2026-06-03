@@ -12,13 +12,20 @@ Architecture:
   - registrar_nodes: known nodes, each with Ed25519 keypair
   - succession_witness_votes: one signature per (package, node)
   - CATHEDRAL_WITNESS_THRESHOLD (default 2): min signatures before accept is permitted
-  - 3 local nodes seeded from master key: structurally independent signatures
+  - 3 local nodes seeded from master key: share the same security surface (see note)
   - External nodes: third parties register pubkey, submit signatures independently
 
 Node keys are derived deterministically from the master registrar key:
   node-1: original CATHEDRAL_REGISTRAR_PRIVKEY
   node-2: SHA256(master + "cathedral-node-2")
   node-3: SHA256(master + "cathedral-node-3")
+
+Security note — local node threshold is structurally 1-of-1:
+  All three local nodes derive from the same master key. A single key compromise
+  allows an attacker to forge all three signatures and satisfy any local-only threshold.
+  The 2-of-3 gate is meaningful ONLY when external nodes (registered via POST
+  /succession/registrar/nodes) contribute signatures. For genuine threshold security,
+  register at least one external node with an independently-held key.
 
 External parties can run independent nodes — their signatures count toward threshold
 once registered via POST /succession/registrar/nodes (requires CATHEDRAL_ADMIN_KEY).
@@ -500,6 +507,11 @@ async def list_registrar_nodes():
         "success": True,
         "threshold": _THRESHOLD,
         "node_count": len(nodes),
+        "security_note": (
+            "Local nodes (is_local=true) share the same master key and do not provide "
+            "independent threshold security. For genuine multi-party witnessing, ensure "
+            "at least one external node (is_local=false) contributes a signature."
+        ),
         "nodes": [
             {
                 "node_id": n["id"],
