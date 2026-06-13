@@ -27,6 +27,7 @@ import json
 import time
 import hmac
 import hashlib
+import html as _html
 import sqlite3
 import secrets
 import threading
@@ -98,6 +99,7 @@ ALLOWED_ORIGINS: List[str] = (
 )
 
 DEFAULT_MEMORY_TTL_DAYS = int(os.environ.get("CATHEDRAL_TTL_DAYS", "0"))  # 0 = no expiry
+TRUST_PROXY = os.environ.get("CATHEDRAL_TRUST_PROXY", "0") == "1"
 
 # ============================================
 # Logging
@@ -122,13 +124,13 @@ AGENT_COUNT_GAUGE = Gauge("cathedral_agents_total", "Total agents registered")
 # ============================================
 # Input Sanitization
 # ============================================
-# Strip HTML tags and null bytes from free-text fields
-_HTML_RE = re.compile(r"<[^>]+>")
+# Strip null bytes only — do NOT strip angle brackets or HTML-like patterns.
+# Memory content legitimately contains code snippets, XML, generics (List<T>),
+# and other angle-bracket syntax. Stripping <[^>]+> silently corrupts these.
 _NULL_RE = re.compile(r"\x00")
 
 def sanitize(text: str) -> str:
     text = _NULL_RE.sub("", text)
-    text = _HTML_RE.sub("", text)
     return text.strip()
 
 # ============================================
@@ -407,7 +409,7 @@ def _detect_and_record_conflict(conn, agent_id, new_id, new_content, new_embeddi
     candidates = []
     if new_embedding and SEMANTIC_SEARCH:
         rows = conn.execute(
-            "SELECT id, content, embedding FROM memories WHERE agent_id = ? AND id != ? AND embedding IS NOT NULL LIMIT 200",
+            "SELECT id, content, embedding FROM memories WHERE agent_id = ? AND id != ? AND embedding IS NOT NULL ORDER BY importance DESC, created_at DESC LIMIT 1000",
             (agent_id, new_id),
         ).fetchall()
         for row in rows:
@@ -532,7 +534,19 @@ def verify_agent(authorization: str = Header(...)) -> dict:
 # ============================================
 # Rate Limiter
 # ============================================
-limiter = Limiter(key_func=get_remote_address)
+# When CATHEDRAL_TRUST_PROXY=1, read the real client IP from CF-Connecting-IP
+# (set by Cloudflare). Without this, get_remote_address returns the CF edge IP
+# so all users share the same rate-limit bucket and direct-to-origin hits
+# bypass limits entirely. Only enable TRUST_PROXY if port 8000 is firewalled
+# to Cloudflare IP ranges — otherwise CF-Connecting-IP is spoofable.
+def _get_client_ip(request: Request) -> str:
+    if TRUST_PROXY:
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip:
+            return cf_ip
+    return get_remote_address(request)
+
+limiter = Limiter(key_func=_get_client_ip)
 
 # ============================================
 # Models
@@ -2719,7 +2733,7 @@ async def cathedral_beta_dashboard():
         ext_cls = "ext-score" if t["external"] is not None else "dim"
         snap_table_rows += (
             f'<tr><td class="dim">{t["datetime"]}</td>'
-            f'<td><span class="label-badge">{t["label"]}</span></td>'
+            f'<td><span class="label-badge">{_html.escape(t["label"])}</span></td>'
             f'<td class="num">{t["internal"]:.3f}</td>'
             f'<td class="{ext_cls}">{ext_str}</td>'
             f'<td class="dim hash">{t["id"][:12]}</td></tr>\n'
@@ -2730,7 +2744,7 @@ async def cathedral_beta_dashboard():
         bar = int(g["priority"] * 100)
         goals_html += (
             f'<div class="goal-item">'
-            f'<div class="goal-text">{g["content"]}</div>'
+            f'<div class="goal-text">{_html.escape(g["content"])}</div>'
             f'<div class="goal-bar-wrap"><div class="goal-bar" style="width:{bar}%"></div></div>'
             f'</div>\n'
         )
