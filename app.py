@@ -458,18 +458,22 @@ def purge_expired_memories():
     """Remove expired memories. Called at startup and can be run periodically."""
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
+    # Collect affected agents BEFORE delete — the WHERE IN subquery would find
+    # nothing after the rows are gone, leaving memory_count permanently stale.
+    affected = conn.execute(
+        "SELECT DISTINCT agent_id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
+        (now,),
+    ).fetchall()
+    affected_ids = [r["agent_id"] for r in affected]
     result = conn.execute(
         "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?", (now,)
     )
     if result.rowcount:
-        # Recalculate memory counts from DB truth
-        conn.execute("""
-            UPDATE agents SET
-                memory_count = (SELECT COUNT(*) FROM memories WHERE agent_id = agents.id)
-            WHERE id IN (
-                SELECT DISTINCT agent_id FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?
+        for aid in affected_ids:
+            conn.execute(
+                "UPDATE agents SET memory_count = (SELECT COUNT(*) FROM memories WHERE agent_id = ?) WHERE id = ?",
+                (aid, aid),
             )
-        """, (now,))
         conn.commit()
         log.info("expired_memories_purged", count=result.rowcount)
     conn.close()
@@ -847,12 +851,15 @@ async def recover_key(data: RecoveryRequest, request: Request):
 @limiter.limit("120/minute")
 async def store_memory(data: MemoryStore, request: Request, agent: dict = Depends(verify_agent)):
     conn = get_db()
-    count_row = conn.execute(
+    # BEGIN IMMEDIATE acquires a write lock before the count so concurrent
+    # requests can't both read below the limit and then both insert past it.
+    conn.execute("BEGIN IMMEDIATE")
+    actual_count = conn.execute(
         "SELECT COUNT(*) as c FROM memories WHERE agent_id = ?", (agent["id"],)
-    ).fetchone()
-    actual_count = count_row["c"]
+    ).fetchone()["c"]
 
     if agent["tier"] == "free" and actual_count >= FREE_TIER_MEMORIES:
+        conn.execute("ROLLBACK")
         conn.close()
         raise HTTPException(429, f"Free tier limit ({FREE_TIER_MEMORIES} memories) reached.")
 
@@ -900,11 +907,13 @@ async def store_memory(data: MemoryStore, request: Request, agent: dict = Depend
 @limiter.limit("10/minute")
 async def store_bulk(data: BulkStore, request: Request, agent: dict = Depends(verify_agent)):
     conn = get_db()
+    conn.execute("BEGIN IMMEDIATE")
     actual_count = conn.execute(
         "SELECT COUNT(*) as c FROM memories WHERE agent_id = ?", (agent["id"],)
     ).fetchone()["c"]
     remaining = FREE_TIER_MEMORIES - actual_count if agent["tier"] == "free" else 10_000
     if len(data.memories) > remaining:
+        conn.execute("ROLLBACK")
         conn.close()
         raise HTTPException(429, f"Would exceed tier limit. Space for {remaining} more memories.")
 
@@ -953,7 +962,10 @@ async def recall_memories(
     conn = get_db()
 
     if search:
-        fts_query = sanitize(search)
+        # Strip FTS5 operator chars (", *, :, ^, -, NEAR, AND, OR, NOT) to
+        # prevent OperationalError from unbalanced/invalid query syntax, which
+        # silently returns empty results instead of raising to the caller.
+        fts_query = re.sub(r'[^\w\s]', ' ', sanitize(search)).strip()
         memories = []
         next_cursor = None
 
