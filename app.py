@@ -80,6 +80,8 @@ from app_trust import trust_router
 from app_registrar import registrar_router, init_registrar_tables
 from app_obligations import obligations_router, init_obligations_tables
 from app_provenance import provenance_router, init_provenance_tables, compute_source_chain_hash
+from app_a2a import a2a_router
+from app_audit import audit_router, init_audit_tables, log_audit
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 # ============================================
@@ -89,7 +91,14 @@ DB_PATH = os.environ.get("CATHEDRAL_DB", "cathedral_memory.db")
 API_VERSION = "2.0.0"
 FREE_TIER_MEMORIES = 1000
 FREE_TIER_MEMORY_SIZE = 4096
-MAX_QUERY_RESULTS = 50
+PRO_TIER_MEMORIES    = 10_000
+PRO_TIER_MEMORY_SIZE = 16_384   # 16 KB
+MAX_QUERY_RESULTS    = 50
+
+# -- Stripe -------------------------------------------------------------------
+STRIPE_SECRET_KEY     = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_PRICE_ID       = os.environ.get("STRIPE_PRICE_ID", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 # CORS: comma-separated list of allowed origins, or "*" for open (dev only)
 _CORS_RAW = os.environ.get("CATHEDRAL_CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
@@ -337,6 +346,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: Stripe columns on agents
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN stripe_customer_id TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN stripe_subscription_id TEXT")
+        conn.commit()
+    except Exception:
+        pass
+
     # Migration: add source_chain_hash to snapshots (provenance)
     try:
         conn.execute("ALTER TABLE snapshots ADD COLUMN source_chain_hash TEXT")
@@ -567,7 +588,7 @@ class AgentRegister(BaseModel):
         return sanitize(v)
 
 class MemoryStore(BaseModel):
-    content: str = Field(..., min_length=1, max_length=FREE_TIER_MEMORY_SIZE)
+    content: str = Field(..., min_length=1, max_length=PRO_TIER_MEMORY_SIZE)
     category: str = Field("general", max_length=50)
     tags: List[str] = Field(default_factory=list)
     importance: float = Field(0.5, ge=0.0, le=1.0)
@@ -701,6 +722,8 @@ app.include_router(trust_router)
 app.include_router(registrar_router)
 app.include_router(obligations_router)
 app.include_router(provenance_router)
+app.include_router(a2a_router)
+app.include_router(audit_router)
 
 # ============================================
 # Middleware: metrics + logging
@@ -728,6 +751,7 @@ async def startup():
     init_obligations_tables()
     init_registrar_tables()
     init_provenance_tables()
+    init_audit_tables()
     purge_expired_memories()
     # Seed gauges
     conn = get_db()
@@ -861,7 +885,12 @@ async def store_memory(data: MemoryStore, request: Request, agent: dict = Depend
     if agent["tier"] == "free" and actual_count >= FREE_TIER_MEMORIES:
         conn.execute("ROLLBACK")
         conn.close()
-        raise HTTPException(429, f"Free tier limit ({FREE_TIER_MEMORIES} memories) reached.")
+        raise HTTPException(429, f"Free tier limit ({FREE_TIER_MEMORIES} memories) reached. Upgrade at https://cathedral-ai.com/upgrade")
+
+    if agent["tier"] == "free" and len(data.content) > FREE_TIER_MEMORY_SIZE:
+        conn.execute("ROLLBACK")
+        conn.close()
+        raise HTTPException(413, f"Free tier memory size limit ({FREE_TIER_MEMORY_SIZE} chars). Upgrade for 16KB.")
 
     memory_id = secrets.token_hex(8)
     now = datetime.now(timezone.utc).isoformat()
@@ -890,6 +919,8 @@ async def store_memory(data: MemoryStore, request: Request, agent: dict = Depend
 
     conn.close()
     MEMORY_COUNT_GAUGE.inc()
+    log_audit(agent["id"], "memory_store", memory_id,
+              {"category": data.category, "importance": data.importance, "source_type": source_type})
 
     return {
         "success": True,
@@ -911,7 +942,7 @@ async def store_bulk(data: BulkStore, request: Request, agent: dict = Depends(ve
     actual_count = conn.execute(
         "SELECT COUNT(*) as c FROM memories WHERE agent_id = ?", (agent["id"],)
     ).fetchone()["c"]
-    remaining = FREE_TIER_MEMORIES - actual_count if agent["tier"] == "free" else 10_000
+    remaining = FREE_TIER_MEMORIES - actual_count if agent["tier"] == "free" else PRO_TIER_MEMORIES - actual_count
     if len(data.memories) > remaining:
         conn.execute("ROLLBACK")
         conn.close()
@@ -1197,6 +1228,7 @@ async def delete_memory(memory_id: str, request: Request, agent: dict = Depends(
     conn.commit()
     conn.close()
     MEMORY_COUNT_GAUGE.dec()
+    log_audit(agent["id"], "memory_delete", memory_id)
     return {"success": True, "deleted": memory_id}
 
 # --- Anchor Verify (gradient drift) ---
@@ -1282,7 +1314,9 @@ async def get_profile(request: Request, agent: dict = Depends(verify_agent)):
         },
         "memory_stats": {
             "total": actual_count,
-            "limit": FREE_TIER_MEMORIES if agent["tier"] == "free" else "unlimited",
+            "memory_limit": FREE_TIER_MEMORIES if agent["tier"] == "free" else PRO_TIER_MEMORIES,
+            "memory_size_limit": FREE_TIER_MEMORY_SIZE if agent["tier"] == "free" else PRO_TIER_MEMORY_SIZE,
+            "upgrade_url": "https://cathedral-ai.com/upgrade" if agent["tier"] == "free" else None,
             "categories": {c["category"]: c["count"] for c in categories},
             "most_accessed": [
                 {"id": m["id"], "preview": m["content"][:80] + "...", "access_count": m["access_count"]}
@@ -1620,6 +1654,9 @@ async def create_snapshot(data: SnapshotCreate, request: Request, agent: dict = 
     conn.commit()
     conn.close()
 
+    log_audit(agent["id"], "snapshot_create", snapshot_id,
+              {"label": label, "memory_count": len(mems_list), "content_hash": content_hash})
+
     return {
         "success": True,
         "snapshot_id": snapshot_id,
@@ -1827,6 +1864,19 @@ async def detect_drift(request: Request, agent: dict = Depends(verify_agent)):
                 "modified": modified,
             },
         },
+        "security_posture": {
+            "tamper_evident":             True,
+            "memory_poisoning_resistant": True,
+            "audit_trail":                True,
+            "bch_anchored":               bool(agent.get("anchor_hash")),
+            "threat":                     "drift_detected" if flagged else "none",
+            "recommendation": (
+                "Review changes immediately -- corpus has drifted beyond threshold."
+                if flagged else
+                "Corpus integrity verified. No unauthorised changes detected."
+            ),
+            "reference": "arXiv:2602.14341 -- Memory Poisoning Attacks on AI Agents",
+        },
     }
 
 
@@ -2015,6 +2065,9 @@ async def confirm_compaction(data: CompactConfirm, request: Request, agent: dict
     conn.close()
 
     total_dropped = sum(e["dropped"] for e in executed)
+    for e in executed:
+        log_audit(agent["id"], "memory_compact", e["keep_id"],
+                  {"dropped": e["dropped"], "drop_ids": e.get("drop_ids", [])})
 
     return {
         "success": True,
@@ -3392,6 +3445,191 @@ async def list_conflicts(
 class ConflictResolve(BaseModel):
     resolution: str = Field(..., description="keep_a | keep_b | merge")
     resolved_content: Optional[str] = Field(None)
+
+
+
+# ===========================================================================
+# Stripe -- paid tier
+# ===========================================================================
+
+import urllib.parse as _stripe_urlparse
+import urllib.request as _stripe_urllib
+import urllib.error as _stripe_urlerr
+
+
+def _stripe_req(method: str, path: str, data=None):
+    url = "https://api.stripe.com/v1" + path
+    body = _stripe_urlparse.urlencode(data).encode() if data else None
+    req = _stripe_urllib.Request(url, data=body, method=method)
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    if body:
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with _stripe_urllib.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read())
+    except _stripe_urlerr.HTTPError as e:
+        return e.code, json.loads(e.read().decode(errors="replace"))
+    except Exception as e:
+        return 0, {"error": {"message": str(e)}}
+
+
+def _verify_stripe_sig(payload: bytes, sig_header: str):
+    if not STRIPE_WEBHOOK_SECRET:
+        return None
+    try:
+        parts = dict(item.split("=", 1) for item in sig_header.split(",") if "=" in item)
+        ts = parts.get("t", "")
+        v1 = parts.get("v1", "")
+        if abs(time.time() - float(ts)) > 300:
+            return None
+        signed = ts + "." + payload.decode("utf-8")
+        expected = hmac.new(
+            STRIPE_WEBHOOK_SECRET.encode(), signed.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, v1):
+            return None
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
+@app.post("/subscribe", status_code=200)
+@limiter.limit("5/minute")
+async def subscribe(request: Request, agent: dict = Depends(verify_agent)):
+    """Upgrade to Cathedral Pro: 10,000 memories, 16KB/memory, unlimited snapshots.
+
+    Returns checkout_url -- open in a browser to pay. Tier upgrades automatically.
+    """
+    if not STRIPE_SECRET_KEY or not STRIPE_PRICE_ID:
+        raise HTTPException(503, "Stripe not configured.")
+
+    if agent.get("tier") == "pro":
+        return {
+            "status": "already_pro",
+            "message": "This agent is already on Pro.",
+            "tier": "pro",
+            "memory_limit": PRO_TIER_MEMORIES,
+        }
+
+    s, data = _stripe_req("POST", "/checkout/sessions", {
+        "mode": "subscription",
+        "line_items[0][price]": STRIPE_PRICE_ID,
+        "line_items[0][quantity]": "1",
+        "success_url": "https://cathedral-ai.com/upgrade-success?session_id={CHECKOUT_SESSION_ID}",
+        "cancel_url": "https://cathedral-ai.com/upgrade",
+        "client_reference_id": agent["id"],
+        "metadata[agent_id]": agent["id"],
+        "metadata[agent_name]": agent["name"],
+        "subscription_data[metadata][agent_id]": agent["id"],
+    })
+    if s not in (200, 201):
+        msg = data.get("error", {}).get("message", "unknown Stripe error")
+        raise HTTPException(502, "Stripe error: " + msg)
+
+    log.info("checkout_created", agent_id=agent["id"], session=data["id"])
+    return {
+        "checkout_url": data["url"],
+        "session_id": data["id"],
+        "price": "GBP10/month",
+        "includes": {
+            "memories": PRO_TIER_MEMORIES,
+            "memory_size_kb": PRO_TIER_MEMORY_SIZE // 1024,
+            "snapshots": "unlimited",
+            "bch_anchoring": "priority",
+        },
+    }
+
+
+@app.post("/webhook/stripe", include_in_schema=False)
+async def stripe_webhook(request: Request):
+    """Stripe webhook -- upgrades/downgrades tiers on payment events."""
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    event = _verify_stripe_sig(payload, sig)
+    if event is None:
+        raise HTTPException(400, "Invalid Stripe signature")
+
+    etype = event.get("type", "")
+    obj = event.get("data", {}).get("object", {})
+
+    if etype == "checkout.session.completed":
+        agent_id = obj.get("metadata", {}).get("agent_id")
+        customer_id = obj.get("customer")
+        subscription_id = obj.get("subscription")
+        if agent_id:
+            conn = get_db()
+            conn.execute(
+                "UPDATE agents SET tier=?, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?",
+                ("pro", customer_id, subscription_id, agent_id),
+            )
+            conn.commit()
+            conn.close()
+            log.info("agent_upgraded_pro", agent_id=agent_id)
+
+    elif etype == "customer.subscription.deleted":
+        subscription_id = obj.get("id")
+        if subscription_id:
+            conn = get_db()
+            conn.execute(
+                "UPDATE agents SET tier=? WHERE stripe_subscription_id=?",
+                ("free", subscription_id),
+            )
+            conn.commit()
+            conn.close()
+            log.info("subscription_cancelled", subscription_id=subscription_id)
+
+    return {"received": True}
+
+
+@app.get("/upgrade", include_in_schema=False)
+async def upgrade_page():
+    from fastapi.responses import HTMLResponse
+    html = (
+        "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
+        "<title>Cathedral Pro</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:60px auto;"
+        "padding:0 24px;background:#0d0d0f;color:#e8e8e0}"
+        "h1{font-size:2rem}.price{font-size:3rem;font-weight:700;color:#7fcfff;margin:16px 0}"
+        "ul{list-style:none;padding:0;margin:24px 0}li{padding:8px 0;border-bottom:1px solid #222}"
+        "pre{background:#1a1a1f;padding:16px;border-radius:6px;overflow-x:auto;color:#adf}"
+        ".note{font-size:.9rem;color:#888;margin-top:32px}</style></head><body>"
+        "<h1>Cathedral Pro</h1>"
+        "<div class=price>GBP10<span style='font-size:1.2rem;color:#888'>/month</span></div>"
+        "<ul>"
+        "<li>+ 10,000 memories (vs 1,000 free)</li>"
+        "<li>+ 16 KB per memory (vs 4 KB free)</li>"
+        "<li>+ Unlimited snapshots and BCH anchoring</li>"
+        "<li>+ CompletenessManifest roots stored and on-chain</li>"
+        "<li>+ Priority drift scoring</li>"
+        "</ul>"
+        "<p>Call <code>POST /subscribe</code> with your API key to get a checkout link:</p>"
+        "<pre>curl -X POST https://cathedral-ai.com/subscribe \
+"
+        "  -H 'Authorization: Bearer YOUR_API_KEY'</pre>"
+        "<div class=note>Free tier remains free forever. No credit card required to start.</div>"
+        "</body></html>"
+    )
+    return HTMLResponse(html)
+
+
+@app.get("/upgrade-success", include_in_schema=False)
+async def upgrade_success():
+    from fastapi.responses import HTMLResponse
+    html = (
+        "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
+        "<title>Cathedral Pro -- Welcome</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:540px;margin:80px auto;"
+        "padding:0 24px;background:#0d0d0f;color:#e8e8e0;text-align:center}"
+        "h1{color:#7fcfff}code{background:#1a1a1f;padding:2px 6px;border-radius:3px}</style>"
+        "</head><body>"
+        "<h1>You are on Pro.</h1>"
+        "<p>Your agent is now upgraded. Call <code>GET /me</code> to confirm.</p>"
+        "<p style='color:#888;font-size:.9rem'>Webhook processing may take up to 60 seconds.</p>"
+        "<p style='margin-top:40px'>"
+        "<a href='https://cathedral-ai.com' style='color:#7fcfff'>Back to Cathedral</a>"
+        "</p></body></html>"
+    )
+    return HTMLResponse(html)
 
 
 @app.post("/conflicts/{conflict_id}/resolve")

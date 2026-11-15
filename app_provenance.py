@@ -299,3 +299,91 @@ def _format_source(row) -> dict:
         "bch_anchored": bool(row["bch_txid"]),
         "ingested_at": row["ingested_at"],
     }
+
+
+# ============================================================
+# Compact merge history provenance
+# ============================================================
+
+def _fetch_memory_prov(conn: sqlite3.Connection, memory_id: str, agent_id: str):
+    return conn.execute(
+        "SELECT id, content, importance, merged_from, created_at FROM memories WHERE id = ? AND agent_id = ?",
+        (memory_id, agent_id)
+    ).fetchone()
+
+
+def _build_merge_chain(conn: sqlite3.Connection, memory_id: str, agent_id: str,
+                       depth: int = 0, seen: set = None):
+    if seen is None:
+        seen = set()
+    if depth > 20 or memory_id in seen:
+        return None
+    seen.add(memory_id)
+
+    row = _fetch_memory_prov(conn, memory_id, agent_id)
+    if not row:
+        return {"id": memory_id, "status": "compacted_and_deleted"}
+
+    merged_from_ids = []
+    try:
+        raw = row["merged_from"]
+        if raw:
+            merged_from_ids = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    node = {
+        "id":          row["id"],
+        "content":     row["content"],
+        "importance":  row["importance"],
+        "created_at":  row["created_at"],
+        "merged_from": [],
+    }
+    for pid in (merged_from_ids or []):
+        child = _build_merge_chain(conn, pid, agent_id, depth + 1, seen)
+        if child:
+            node["merged_from"].append(child)
+
+    return node
+
+
+@provenance_router.get("/memories/{memory_id}/provenance")
+async def memory_compact_provenance(memory_id: str, authorization: str = Header(...)):
+    """
+    Traces the full compact merge history for a memory.
+
+    Follows the merged_from chain recursively — shows every memory that was
+    compacted into this one, back to the original source memories. Useful for
+    auditing compact operations and verifying no information was lost.
+    """
+    agent = _verify_agent(authorization)
+
+    conn = _get_db()
+    root = _fetch_memory_prov(conn, memory_id, agent["id"])
+    if not root:
+        conn.close()
+        raise HTTPException(404, "Memory not found")
+
+    chain = _build_merge_chain(conn, memory_id, agent["id"])
+    conn.close()
+
+    def _count(node):
+        if not node or "merged_from" not in node:
+            return 0
+        return 1 + sum(_count(c) for c in (node.get("merged_from") or []))
+
+    ancestors = _count(chain) - 1
+
+    return {
+        "success":         True,
+        "memory_id":       memory_id,
+        "agent":           agent["name"],
+        "total_ancestors": ancestors,
+        "note": (
+            "Each node shows the memory content when it existed. "
+            "Nodes in merged_from were compacted into their parent."
+            if ancestors > 0 else
+            "This memory has no compact history — stored directly."
+        ),
+        "provenance": chain,
+    }
