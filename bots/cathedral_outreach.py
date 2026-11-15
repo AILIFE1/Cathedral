@@ -66,12 +66,22 @@ def solve_moltbook_challenge(challenge_text):
                 i += 1
         if not nums:
             return None
+        # Check raw text for symbol operators BEFORE normalisation strips them
+        raw_text = challenge_text or ""
+        has_asterisk = '*' in raw_text
+        has_slash = '/' in raw_text and '//' not in raw_text
+
         norm = ' '.join(_ww([t]) for t in raw)
         explicit = _re.findall(
             r'\b(plus|add|added|minus|subtract|subtracted|difference|'
             r'times|multiply|multiplied|product|divided|div|quotient)\b', norm)
         aggregate = _re.findall(r'\b(total|sum|combined|together)\b', norm)
-        if not explicit and aggregate:
+        # Symbol operators override aggregate/word detection
+        if has_asterisk and len(nums) >= 2:
+            result = float(nums[0]) * float(nums[1])
+        elif has_slash and len(nums) >= 2:
+            result = float(nums[0]) / float(nums[1]) if nums[1] != 0 else float(nums[0])
+        elif not explicit and aggregate:
             result = sum(nums)
         elif not explicit:
             result = float(nums[0])
@@ -89,7 +99,8 @@ def solve_moltbook_challenge(challenge_text):
                     result *= n2
                 elif op in ('divided', 'div', 'quotient'):
                     result = result / n2 if n2 != 0 else result
-        return str(int(result)) if result == int(result) else f"{result:.2f}"
+        # Always return 2 decimal places -- Moltbook requires e.g. "100.00"
+        return f"{float(result):.2f}"
     except Exception:
         return None
 
@@ -148,16 +159,25 @@ def make_uid(platform, title):
     raw = f"{platform}-{title}-{datetime.now(timezone.utc).isoformat()}"
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
-def register_tracked_post(uid, platform, topic, title):
+def register_tracked_post(uid, platform, topic, title, platform_id=None):
     """Record the post in tracker.db so clicks can be attributed."""
     conn = sqlite3.connect(TRACKER_DB)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS tracked_posts "
-        "(uid TEXT PRIMARY KEY, platform TEXT, topic TEXT, title TEXT, created_at TEXT)"
+        "(uid TEXT PRIMARY KEY, platform TEXT, topic TEXT, title TEXT, created_at TEXT, platform_id TEXT, evaluated_at TEXT)"
     )
+    # add columns if table already exists without them
+    try:
+        conn.execute("ALTER TABLE tracked_posts ADD COLUMN platform_id TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE tracked_posts ADD COLUMN evaluated_at TEXT")
+    except Exception:
+        pass
     conn.execute(
-        "INSERT OR IGNORE INTO tracked_posts VALUES (?,?,?,?,?)",
-        (uid, platform, topic, title[:200], datetime.now(timezone.utc).isoformat())
+        "INSERT OR IGNORE INTO tracked_posts (uid, platform, topic, title, created_at, platform_id) VALUES (?,?,?,?,?,?)",
+        (uid, platform, topic, title[:200], datetime.now(timezone.utc).isoformat(), platform_id)
     )
     conn.commit()
     conn.close()
@@ -1081,7 +1101,8 @@ def run_moltbook():
     moltbook_verify(data, MOLTBOOK_HEADERS, http)
 
     mark_seen(dedup_uid, "moltbook", post["title"], "posted")
-    register_tracked_post(uid, "moltbook", post["topic"], post["title"])
+    mb_post_id = (data.get("post") or {}).get("id") or ""
+    register_tracked_post(uid, "moltbook", post["topic"], post["title"], platform_id=mb_post_id)
     save_memory(post["title"], post["topic"],
                 f"Posted to r/{post['submolt_name']}: {post['title'][:60]}", uid=uid)
     generate_reflection()
