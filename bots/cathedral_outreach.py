@@ -69,12 +69,15 @@ def solve_moltbook_challenge(challenge_text):
         # Check raw text for symbol operators BEFORE normalisation strips them
         raw_text = challenge_text or ""
         has_asterisk = '*' in raw_text
-        has_slash = '/' in raw_text and '//' not in raw_text
+        import re as _re2
+        has_slash = bool(_re2.search(r'(\s/\s|\d/\d)', raw_text)) and '//' not in raw_text
 
         norm = ' '.join(_ww([t]) for t in raw)
         explicit = _re.findall(
             r'\b(plus|add|added|minus|subtract|subtracted|difference|'
-            r'times|multiply|multiplied|product|divided|div|quotient)\b', norm)
+            r'times|multiply|multiplied|product|divided|div|quotient|'
+            r'slows|slowed|slow|decrease|decreased|decreases|reduces|reduced|reduce|'
+            r'less|loses|lost|lose|drops|dropped|drop|fell|falls|fall|lower|lowered)\b', norm)
         aggregate = _re.findall(r'\b(total|sum|combined|together)\b', norm)
         # Symbol operators override aggregate/word detection
         if has_asterisk and len(nums) >= 2:
@@ -93,7 +96,11 @@ def solve_moltbook_challenge(challenge_text):
                 n2 = float(nums[j + 1])
                 if op in ('plus', 'add', 'added'):
                     result += n2
-                elif op in ('minus', 'subtract', 'subtracted', 'difference'):
+                elif op in ('minus', 'subtract', 'subtracted', 'difference',
+                             'slows', 'slowed', 'slow', 'decrease', 'decreased', 'decreases',
+                             'reduces', 'reduced', 'reduce',
+                             'less', 'loses', 'lost', 'lose', 'drops', 'dropped', 'drop',
+                             'fell', 'falls', 'fall', 'lower', 'lowered'):
                     result -= n2
                 elif op in ('times', 'multiply', 'multiplied', 'product'):
                     result *= n2
